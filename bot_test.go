@@ -5,14 +5,16 @@ import (
 	"context"
 	"fbot"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/NibiruChain/nibiru/x/common"
-	//"github.com/NibiruChain/nibiru/x/common/testutil/cli"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
+	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -20,9 +22,10 @@ import (
 
 type BotSuite struct {
 	suite.Suite
-	bot   *fbot.Bot
-	gosdk *gonibi.NibiruClient
-	ctx   context.Context
+	bot     *fbot.Bot
+	gosdk   *gonibi.NibiruClient
+	ctx     context.Context
+	address sdk.AccAddress
 }
 
 func TestBot(t *testing.T) {
@@ -104,7 +107,9 @@ func (s *BotSuite) TestBotSuite() {
 	s.SetupGoSdk()
 	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
 	s.T().Run("RunTestPopulateAmms", s.RunTestPopulateAmms)
-	s.T().Run("RunQuoteNeededToMovePrice", s.RunQuoteNeededToMovePrice)
+	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
+	s.T().Run("RunTestQueryAddress", s.RunTestQueryAddress)
+	s.T().Run("RunTestFetchPositions", s.RunTestFetchPositions)
 }
 
 func (s *BotSuite) SetupGoSdk() {
@@ -121,18 +126,29 @@ func (s *BotSuite) SetupGoSdk() {
 	s.gosdk = &gosdk
 	s.bot = fbot.NewBot().PopulateGosdkFromNetinfo(netInfo)
 }
+func PrivKeyAddressPairs(n int) (keys []cryptotypes.PrivKey, addrs []sdk.AccAddress) {
+	r := rand.New(rand.NewSource(12345)) // make the generation deterministic
+	keys = make([]cryptotypes.PrivKey, n)
+	addrs = make([]sdk.AccAddress, n)
+	for i := 0; i < n; i++ {
+		secret := make([]byte, 32)
+		_, err := r.Read(secret)
+		if err != nil {
+			panic("Could not read randomness")
+		}
+		keys[i] = secp256k1.GenPrivKeyFromSecret(secret)
+		addrs[i] = sdk.AccAddress(keys[i].PubKey().Address())
+	}
+	return
+}
 
-// func GeneratePrivKey(nodeDirName string) {
-// 	mnemonic := ""
-// 	nodeDirName := s.T().TempDir()
-
-// 	addr, secret, err := sdktestutil.GenerateSaveCoinKey(
-// 		kb, nodeDirName, mnemonic, true, algo,
-// 	)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// }
+// take nodeDirName string
+func (s *BotSuite) RunTestQueryAddress(t *testing.T) {
+	addr, err := s.bot.QueryAddress(s.T().TempDir())
+	s.NoError(err)
+	s.NotNil(addr)
+	s.address = addr
+}
 
 func (s *BotSuite) RunTestPopulateAmms(t *testing.T) {
 
@@ -159,21 +175,14 @@ func (s *BotSuite) RunTestFetchPrices(t *testing.T) {
 
 }
 
-// func (s *BotSuite) RunFetchPositions(t *testing.T) {
+func (s *BotSuite) RunTestFetchPositions(t *testing.T) {
+	err := s.bot.FetchPositions(string(s.address), s.ctx)
+	fmt.Print("Positions ", s.bot.State.Positions["ubtc:unusd"])
+	s.NoError(err)
 
-// 	s.gosdk.Query.Perp.QueryPositions(s.ctx, &perpTypes.QueryPositionsRequest{
-// 		Trader: "nibi1zaavvzxez0elundtn32qnk9lkm8kmcsz44g7xl",
-// 	})
+}
 
-// }
-
-// 	s.NoErrorf(err, "Positions Resp: %v", positionsResp)
-
-// 	//	var bot fbot.Bot = fbot.NewBot()
-
-// }
-
-func (s *BotSuite) RunQuoteNeededToMovePrice(t *testing.T) {
+func (s *BotSuite) RunTestQuoteNeededToMovePrice(t *testing.T) {
 
 	s.bot.State.Amms = map[string]perpTypes.AMM{
 		"ubtc:unusd": {

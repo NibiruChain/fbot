@@ -12,6 +12,7 @@ import (
 	oracleTypes "github.com/NibiruChain/nibiru/x/oracle/types"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
+	sdktestutil "github.com/cosmos/cosmos-sdk/testutil"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
@@ -47,10 +48,6 @@ func main() {
 
 }
 
-func run() {
-
-}
-
 func (bot *Bot) PopulateGosdk(grpcUrl string, chainId string) *Bot {
 	grpcClientConnection, err := gonibi.GetGRPCConnection(
 		grpcUrl, true, 5)
@@ -64,8 +61,6 @@ func (bot *Bot) PopulateGosdk(grpcUrl string, chainId string) *Bot {
 		log.Fatal(err)
 	}
 	bot.Gosdk = &gosdk
-
-	gosdk.Tx.BroadcastMsgs()
 
 	return bot
 }
@@ -92,17 +87,45 @@ func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 
 }
 
-// TODO: Func to Fetch prices grab new prices -> populating -> trading
-// TODO: Func to Fetch positions
-// TODO: Populate positions
 // Make start their own network (look at grpcclientsuite setupsuite())
+// func RunNetwork() {
+// 	gonibi.
+// }
 
-func (bot *Bot) FetchPositions(trader string) (queryPositionsResp perpTypes.QueryPositionsResponse) {
+func (bot *Bot) MakePosition() {
 
-	return
+	bot.Gosdk.Tx.BroadcastMsgs()
 }
 
-func (bot *Bot) PopulatePositions() {
+func (bot *Bot) QueryAddress(nodeDirName string) (sdk.AccAddress, error) {
+	mnemonic := os.Getenv("VALIDATOR_MNEMONIC")
+	//kb, err := s.gosdk.Keyring.List()
+
+	signAlgo, _ := bot.Gosdk.Keyring.SupportedAlgorithms()
+	addr, _, err := sdktestutil.GenerateSaveCoinKey(
+		bot.Gosdk.Keyring, nodeDirName, mnemonic, true, signAlgo[0],
+	)
+	return addr, err
+}
+func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
+
+	positions, err := bot.Gosdk.Query.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
+		Trader: trader,
+	})
+	if err != nil {
+		return err
+	}
+
+	bot.PopulatePositions(positions)
+
+	return nil
+}
+
+func (bot *Bot) PopulatePositions(positions *perpTypes.QueryPositionsResponse) {
+	for _, positionResponse := range positions.GetPositions() {
+		pair := positionResponse.Position.Pair
+		bot.State.Positions[pair.String()] = positionResponse.Position
+	}
 
 }
 
