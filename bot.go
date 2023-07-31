@@ -13,6 +13,7 @@ import (
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
 	sdktestutil "github.com/cosmos/cosmos-sdk/testutil"
+	"github.com/joho/godotenv"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
@@ -20,10 +21,15 @@ import (
 var _ = app.BankModule.Name
 
 type BotState struct {
-	Positions map[string]perpTypes.Position
+	Positions map[string]PositionFields
 	Amms      map[string]perpTypes.AMM
 	Prices    map[string]Prices
 	Funds     map[string]sdk.Int
+}
+
+type PositionFields struct {
+	Positon       perpTypes.Position
+	UnrealizedPnl sdk.Dec
 }
 
 type Bot struct {
@@ -37,6 +43,24 @@ type Prices struct {
 	MarkPrice  sdk.Dec
 }
 
+type CurrPosStats struct {
+	CurrMarkPrice   sdk.Dec
+	CurrIndexPrice  sdk.Dec
+	CurrSize        sdk.Dec
+	PriceMultiplier sdk.Dec
+	MarketDelta     sdk.Dec
+	UnrealizedPnl   sdk.Dec
+	IsAgainstMarket bool
+}
+type TradeAction int
+
+const (
+	OpenOrder TradeAction = iota
+	CloseOrder
+	CloseAndOpenOrder
+	DontTrade
+)
+
 // func StoreTradeResult() {
 
 // }
@@ -45,6 +69,127 @@ func main() {
 	var LOGGING_FILE = "test-log.txt"
 	SetupLoggingFile(LOGGING_FILE)
 	fmt.Print(LOGGING_FILE)
+
+}
+
+func Run() {
+
+	godotenv.Load()
+	var GRPC_ENDPOINT = os.Getenv("GRPC_ENDPONT")
+	var CHAIN_ID = os.Getenv("CHAIN_ID")
+
+	// Use default network info if .env is empty
+	if GRPC_ENDPOINT == "" {
+		GRPC_ENDPOINT = gonibi.DefaultNetworkInfo.GrpcEndpoint
+	}
+	if CHAIN_ID == "" {
+		CHAIN_ID = gonibi.DefaultNetworkInfo.ChainID
+	}
+
+	var bot = NewBot().PopulateGosdk(GRPC_ENDPOINT, CHAIN_ID)
+	context := context.Background()
+
+	// Querying info for Prices/Amms structs
+	pricesErr := bot.FetchNewPrices(context)
+
+	if pricesErr != nil {
+		log.Fatalf("Cannot FetchNewPrices(): %v", pricesErr)
+	}
+
+	// Querying trader address to find positions by
+	sdkAddress, addressErr := bot.QueryAddress(os.TempDir())
+
+	if addressErr != nil {
+		log.Fatalf("Cannot QueryAddress(): %v", sdkAddress)
+	}
+
+	// Querying positions and storing in bot.State
+	positionsErr := bot.FetchPositions(string(sdkAddress), context)
+
+	if positionsErr != nil {
+		log.Fatalf("Cannot FetchPositions(): %v", positionsErr)
+	}
+
+	quoteToMove := QuoteNeededToMovePrice(*bot)
+
+	for pair, quoteAmount := range quoteToMove {
+
+		bot.Trade(pair, quoteAmount)
+
+	}
+}
+
+func (bot *Bot) Trade(pair string, quoteAmount sdk.Dec) error {
+	_, posExists := bot.State.Positions[pair]
+
+	currPosition := CurrPosStats{
+		CurrMarkPrice:   sdk.NewDec(0),
+		CurrIndexPrice:  sdk.NewDec(0),
+		CurrSize:        sdk.NewDec(0),
+		PriceMultiplier: sdk.NewDec(0),
+		MarketDelta:     sdk.NewDec(0),
+		UnrealizedPnl:   sdk.NewDec(0),
+		IsAgainstMarket: false,
+	}
+
+	if posExists {
+		currPosition = bot.PopulateCurrPosStats(pair)
+	}
+
+	action := EvaluateTradeAction(quoteAmount, bot.State.Amms[pair], posExists, currPosition)
+	switch action {
+	case OpenOrder:
+		return bot.OpenPosition(quoteAmount.RoundInt(), sdk.NewDec(1))
+	case CloseOrder:
+		return bot.ClosePosition(pair)
+	case CloseAndOpenOrder:
+		return bot.CloseAndOpenPosition(quoteAmount.RoundInt(), pair)
+	case DontTrade:
+		return nil
+	default:
+		return fmt.Errorf("Invalid action type: %v", action)
+	}
+
+	// unrealizedPnl from queryPositionsresponse
+}
+
+func (bot *Bot) PopulateCurrPosStats(pair string) CurrPosStats {
+	MarkPrice := bot.State.Prices[pair].MarkPrice
+	IndexPrice := bot.State.Prices[pair].IndexPrice
+	Size := bot.State.Positions[pair].Positon.Size_
+	PriceMult := bot.State.Amms[pair].PriceMultiplier
+	MarketDelta := MarkPrice.Sub(IndexPrice).Mul(PriceMult).Abs()
+	IsPosAgainstMarket := IsPosAgainstMarket(Size,
+		MarkPrice, IndexPrice)
+	UnrealizedPnl := bot.State.Positions[pair].UnrealizedPnl
+
+	position := CurrPosStats{
+		CurrMarkPrice:   MarkPrice,
+		CurrIndexPrice:  IndexPrice,
+		CurrSize:        Size,
+		PriceMultiplier: PriceMult,
+		MarketDelta:     MarketDelta,
+		IsAgainstMarket: IsPosAgainstMarket,
+		UnrealizedPnl:   UnrealizedPnl,
+	}
+
+	return position
+}
+
+func EvaluateTradeAction(QuoteToMovePrice sdk.Dec, amm perpTypes.AMM, posExists bool, position CurrPosStats) TradeAction {
+
+	if ShouldNotTrade(QuoteToMovePrice, amm.QuoteReserve) &&
+		posExists && position.IsAgainstMarket &&
+		position.MarketDelta.GT(position.CurrIndexPrice.Quo(sdk.NewDec(10))) {
+		return CloseOrder
+	} else if !posExists && !ShouldNotTrade(QuoteToMovePrice, amm.QuoteReserve) {
+		return OpenOrder
+	} else if !position.IsAgainstMarket &&
+		position.UnrealizedPnl.GT(position.CurrSize.Abs().Quo(sdk.NewDec(10))) {
+		return CloseAndOpenOrder
+	} else {
+		return DontTrade
+	}
 
 }
 
@@ -72,34 +217,41 @@ func (bot *Bot) PopulateGosdkFromNetinfo(netinfo gonibi.NetworkInfo) *Bot {
 func NewBot() *Bot {
 	return &Bot{
 		State: BotState{
-			Positions: make(map[string]perpTypes.Position),
+			Positions: make(map[string]PositionFields),
 			Amms:      make(map[string]perpTypes.AMM),
 			Prices:    make(map[string]Prices)},
 		Gosdk: &gonibi.NibiruClient{},
 	}
 }
 
-func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
-	for index, value := range queryMarketsResp.AmmMarkets {
-		pair := value.Amm.Pair
-		bot.State.Amms[pair.String()] = queryMarketsResp.AmmMarkets[index].Amm
-	}
+// Make start their own network (look at grpcclientsuite setupsuite())
+func RunNetwork() {
 
 }
 
-// Make start their own network (look at grpcclientsuite setupsuite())
-// func RunNetwork() {
-// 	gonibi.
-// }
+func (bot *Bot) OpenPosition(quoteToMove sdk.Int, leverage sdk.Dec) error {
+	// var isLong bool
+	// if quoteToMove > 0 {
+	// 	isLong = true
+	// } else {
+	// 	isLong = false
+	// }
 
-func (bot *Bot) MakePosition() {
+	// bot.Gosdk.Tx.BroadcastMsgs()
 
-	bot.Gosdk.Tx.BroadcastMsgs()
+	return nil
+}
+
+func (bot *Bot) CloseAndOpenPosition(quoteToMove sdk.Int, pair string) error {
+	return nil
+}
+
+func (bot *Bot) ClosePosition(pair string) error {
+	return nil
 }
 
 func (bot *Bot) QueryAddress(nodeDirName string) (sdk.AccAddress, error) {
 	mnemonic := os.Getenv("VALIDATOR_MNEMONIC")
-	//kb, err := s.gosdk.Keyring.List()
 
 	signAlgo, _ := bot.Gosdk.Keyring.SupportedAlgorithms()
 	addr, _, err := sdktestutil.GenerateSaveCoinKey(
@@ -112,6 +264,7 @@ func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 	positions, err := bot.Gosdk.Query.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
 		Trader: trader,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -123,8 +276,12 @@ func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 
 func (bot *Bot) PopulatePositions(positions *perpTypes.QueryPositionsResponse) {
 	for _, positionResponse := range positions.GetPositions() {
+
 		pair := positionResponse.Position.Pair
-		bot.State.Positions[pair.String()] = positionResponse.Position
+		bot.State.Positions[pair.String()] = PositionFields{
+			Positon:       positionResponse.Position,
+			UnrealizedPnl: positionResponse.UnrealizedPnl,
+		}
 	}
 
 }
@@ -143,6 +300,14 @@ func (bot *Bot) FetchNewPrices(ctx context.Context) error {
 	bot.PopulatePrices(oracle, queryMarkets)
 
 	return nil
+}
+
+func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
+	for index, value := range queryMarketsResp.AmmMarkets {
+		pair := value.Amm.Pair
+		bot.State.Amms[pair.String()] = queryMarketsResp.AmmMarkets[index].Amm
+	}
+
 }
 
 func (bot *Bot) PopulatePrices(oracle *oracleTypes.QueryExchangeRatesResponse,
@@ -177,13 +342,11 @@ func MockQueryRates() oracleTypes.QueryExchangeRatesResponse {
 	}
 }
 
-func ShouldTrade(QuoteToMovePrice sdk.Dec, amm perpTypes.AMM) bool {
-	if QuoteToMovePrice.Abs().LT(amm.QuoteReserve.QuoInt64(20)) {
-		return false
-	} else {
+func ShouldNotTrade(quoteToMovePrice sdk.Dec, quoteReserve sdk.Dec) bool {
+	if quoteToMovePrice.Abs().LT(quoteReserve.QuoInt64(20)) {
 		return true
 	}
-
+	return false
 }
 
 func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
@@ -223,6 +386,7 @@ func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
 // }
 
 // Initializes a logging file with the given file name.
+
 func SetupLoggingFile(loggingFilename string) {
 
 	// Make blank file

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/NibiruChain/nibiru/x/common"
+	"github.com/NibiruChain/nibiru/x/common/testutil/cli"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
@@ -18,6 +19,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/grpc"
 )
 
 type BotSuite struct {
@@ -32,6 +34,11 @@ func TestBot(t *testing.T) {
 	suite.Run(t, new(BotSuite))
 }
 
+// func TestRun(t *testing.T) {
+// 	fbot.Run()
+// }
+
+// Example of iterative test cases
 func TestIsPosAgainstMarket(t *testing.T) {
 
 	for _, tc := range []struct {
@@ -61,6 +68,43 @@ func TestIsPosAgainstMarket(t *testing.T) {
 	}
 }
 
+type BlockChain struct {
+	suite.Suite
+	gosdk    *gonibi.NibiruClient
+	grpcConn *grpc.ClientConn
+	cfg      *cli.Config
+	network  *cli.Network
+	val      *cli.Validator
+}
+
+// func TestRunChain(t *testing.T) {
+// 	gonibi.
+// }
+
+// func (chain *BlockChain) SetupChain() {
+// 	app.SetPrefixes(app.AccountAddressPrefix)
+// 	encConfig := app.MakeEncodingConfig()
+// 	genState := genesis.NewTestGenesisState(encConfig)
+// 	cliCfg := cli.BuildNetworkConfig(genState)
+// 	chain.cfg = &cliCfg
+// 	chain.cfg.NumValidators = 1
+
+// 	network, err := cli.New(
+// 		chain.T(),
+// 		chain.T().TempDir(),
+// 		*chain.cfg,
+// 	)
+// 	chain.NoError(err)
+// 	chain.network = network
+// 	chain.NoError(chain.network.WaitForNextBlock())
+
+// 	chain.val = chain.network.Validators[0]
+// 	AbsorbServerConfig(chain.cfg, chain.val.AppConfig)
+// 	AbsorbTmConfig(chain.cfg, chain.val.Ctx.Config)
+// 	chain.ConnectGrpc()
+
+// }
+
 func TestSetupLoggingFile(t *testing.T) {
 	filename := "temp-test"
 	if _, err := os.Stat(filename); err == nil {
@@ -89,27 +133,14 @@ func TestSetupLoggingFile(t *testing.T) {
 	require.NoError(t, os.Remove(filename))
 }
 
-func TestShouldTrade(t *testing.T) {
-	var shouldTrade = fbot.ShouldTrade(sdk.NewDec(50), perpTypes.AMM{
-		Pair:            "ueth:unusd",
-		BaseReserve:     sdk.NewDec(10),
-		QuoteReserve:    sdk.NewDec(10),
-		SqrtDepth:       sdk.NewDec(10),
-		PriceMultiplier: sdk.NewDec(10),
-		TotalLong:       sdk.NewDec(10),
-		TotalShort:      sdk.NewDec(10),
-	})
-
-	require.True(t, shouldTrade)
-}
-
 func (s *BotSuite) TestBotSuite() {
 	s.SetupGoSdk()
-	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
-	s.T().Run("RunTestPopulateAmms", s.RunTestPopulateAmms)
-	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
-	s.T().Run("RunTestQueryAddress", s.RunTestQueryAddress)
-	s.T().Run("RunTestFetchPositions", s.RunTestFetchPositions)
+	// s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
+	// s.T().Run("RunTestPopulateAmms", s.RunTestPopulateAmms)
+	// s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
+	// s.T().Run("RunTestQueryAddress", s.RunTestQueryAddress)
+	s.T().Run("RunTestEvaluateTradeAction", s.RunTestEvaluateTradeAction)
+	//s.T().Run("RunTestFetchPositions", s.RunTestFetchPositions)
 }
 
 func (s *BotSuite) SetupGoSdk() {
@@ -180,6 +211,107 @@ func (s *BotSuite) RunTestFetchPositions(t *testing.T) {
 	fmt.Print("Positions ", s.bot.State.Positions["ubtc:unusd"])
 	s.NoError(err)
 
+}
+
+func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		quoteAmount sdk.Dec
+		amm         perpTypes.AMM
+		posExists   bool
+		position    fbot.CurrPosStats
+		tradeAction fbot.TradeAction
+	}{
+		{
+			name:        "Open Order",
+			quoteAmount: sdk.NewDec(3500), amm: perpTypes.AMM{
+				Pair:            "ubtc:unusd",
+				BaseReserve:     sdk.NewDec(10000),
+				QuoteReserve:    sdk.NewDec(10000),
+				SqrtDepth:       sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				TotalLong:       sdk.NewDec(10),
+				TotalShort:      sdk.NewDec(10),
+			}, posExists: false, position: fbot.CurrPosStats{
+				CurrMarkPrice:   sdk.NewDec(5),
+				CurrIndexPrice:  sdk.NewDec(10),
+				CurrSize:        sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				MarketDelta:     sdk.NewDec(10),
+				UnrealizedPnl:   sdk.NewDec(10),
+				IsAgainstMarket: false,
+			},
+			tradeAction: fbot.OpenOrder,
+		},
+		{
+			name:        "Close Order",
+			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+				Pair:            "ueth:unusd",
+				BaseReserve:     sdk.NewDec(10000),
+				QuoteReserve:    sdk.NewDec(10000),
+				SqrtDepth:       sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				TotalLong:       sdk.NewDec(10),
+				TotalShort:      sdk.NewDec(10),
+			}, posExists: true, position: fbot.CurrPosStats{
+				CurrMarkPrice:   sdk.NewDec(5),
+				CurrIndexPrice:  sdk.NewDec(2000),
+				CurrSize:        sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				MarketDelta:     sdk.NewDec(1000),
+				UnrealizedPnl:   sdk.NewDec(10),
+				IsAgainstMarket: true,
+			},
+			tradeAction: fbot.CloseOrder,
+		},
+		{
+			name:        "CloseAndOpenOrder",
+			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+				Pair:            "ueth:unusd",
+				BaseReserve:     sdk.NewDec(10000),
+				QuoteReserve:    sdk.NewDec(10000),
+				SqrtDepth:       sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				TotalLong:       sdk.NewDec(10),
+				TotalShort:      sdk.NewDec(10),
+			}, posExists: true, position: fbot.CurrPosStats{
+				CurrMarkPrice:   sdk.NewDec(5),
+				CurrIndexPrice:  sdk.NewDec(2000),
+				CurrSize:        sdk.NewDec(2500),
+				PriceMultiplier: sdk.NewDec(10),
+				MarketDelta:     sdk.NewDec(1000),
+				UnrealizedPnl:   sdk.NewDec(1000),
+				IsAgainstMarket: false,
+			},
+			tradeAction: fbot.CloseAndOpenOrder,
+		},
+		{
+			name:        "DontTrade",
+			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+				Pair:            "ubtc:unusd",
+				BaseReserve:     sdk.NewDec(10000),
+				QuoteReserve:    sdk.NewDec(10000),
+				SqrtDepth:       sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				TotalLong:       sdk.NewDec(10),
+				TotalShort:      sdk.NewDec(10),
+			}, posExists: false, position: fbot.CurrPosStats{
+				CurrMarkPrice:   sdk.NewDec(2000),
+				CurrIndexPrice:  sdk.NewDec(2000),
+				CurrSize:        sdk.NewDec(10),
+				PriceMultiplier: sdk.NewDec(10),
+				MarketDelta:     sdk.NewDec(50),
+				UnrealizedPnl:   sdk.NewDec(10),
+				IsAgainstMarket: true,
+			},
+			tradeAction: fbot.DontTrade,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tradeAction := fbot.EvaluateTradeAction(tc.quoteAmount, tc.amm, tc.posExists, tc.position)
+			require.Equal(t, tradeAction, tc.tradeAction)
+		})
+	}
 }
 
 func (s *BotSuite) RunTestQuoteNeededToMovePrice(t *testing.T) {
