@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"cosmossdk.io/math"
 	"github.com/NibiruChain/nibiru/app"
 	"github.com/NibiruChain/nibiru/x/common"
 	"github.com/NibiruChain/nibiru/x/common/asset"
@@ -22,14 +23,19 @@ var _ = app.BankModule.Name
 
 type BotState struct {
 	Positions map[string]PositionFields
-	Amms      map[string]perpTypes.AMM
+	Amms      map[string]AmmFields
 	Prices    map[string]Prices
-	Funds     map[string]sdk.Int
+	Funds     map[string]math.Int
 }
 
 type PositionFields struct {
 	Positon       perpTypes.Position
 	UnrealizedPnl sdk.Dec
+}
+
+type AmmFields struct {
+	Markets perpTypes.AMM
+	Bias    sdk.Dec
 }
 
 type Bot struct {
@@ -61,9 +67,9 @@ const (
 	DontTrade
 )
 
-// func StoreTradeResult() {
+func StoreTradeResult(txResp sdk.TxResponse) {
 
-// }
+}
 
 func main() {
 	var LOGGING_FILE = "test-log.txt"
@@ -104,22 +110,28 @@ func Run() {
 	}
 
 	// Querying positions and storing in bot.State
-	positionsErr := bot.FetchPositions(string(sdkAddress), context)
+	positionsErr := bot.FetchPositions(sdkAddress.String(), context)
 
 	if positionsErr != nil {
 		log.Fatalf("Cannot FetchPositions(): %v", positionsErr)
+	}
+
+	balancesErr := bot.FetchBalances(context)
+
+	if balancesErr != nil {
+		log.Fatalf("Cannot FetchBalances: %v", balancesErr)
 	}
 
 	quoteToMove := QuoteNeededToMovePrice(*bot)
 
 	for pair, quoteAmount := range quoteToMove {
 
-		bot.Trade(pair, quoteAmount)
+		bot.PerformTradeAction(pair, quoteAmount)
 
 	}
 }
 
-func (bot *Bot) Trade(pair string, quoteAmount sdk.Dec) error {
+func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec) error {
 	_, posExists := bot.State.Positions[pair]
 
 	currPosition := CurrPosStats{
@@ -136,7 +148,7 @@ func (bot *Bot) Trade(pair string, quoteAmount sdk.Dec) error {
 		currPosition = bot.PopulateCurrPosStats(pair)
 	}
 
-	action := EvaluateTradeAction(quoteAmount, bot.State.Amms[pair], posExists, currPosition)
+	action := EvaluateTradeAction(quoteAmount, bot.State.Amms[pair].Markets, posExists, currPosition)
 	switch action {
 	case OpenOrder:
 		return bot.OpenPosition(quoteAmount.RoundInt(), sdk.NewDec(1))
@@ -149,15 +161,13 @@ func (bot *Bot) Trade(pair string, quoteAmount sdk.Dec) error {
 	default:
 		return fmt.Errorf("Invalid action type: %v", action)
 	}
-
-	// unrealizedPnl from queryPositionsresponse
 }
 
 func (bot *Bot) PopulateCurrPosStats(pair string) CurrPosStats {
 	MarkPrice := bot.State.Prices[pair].MarkPrice
 	IndexPrice := bot.State.Prices[pair].IndexPrice
 	Size := bot.State.Positions[pair].Positon.Size_
-	PriceMult := bot.State.Amms[pair].PriceMultiplier
+	PriceMult := bot.State.Amms[pair].Markets.PriceMultiplier
 	MarketDelta := MarkPrice.Sub(IndexPrice).Mul(PriceMult).Abs()
 	IsPosAgainstMarket := IsPosAgainstMarket(Size,
 		MarkPrice, IndexPrice)
@@ -218,23 +228,21 @@ func NewBot() *Bot {
 	return &Bot{
 		State: BotState{
 			Positions: make(map[string]PositionFields),
-			Amms:      make(map[string]perpTypes.AMM),
+			Amms:      make(map[string]AmmFields),
 			Prices:    make(map[string]Prices)},
 		Gosdk: &gonibi.NibiruClient{},
 	}
 }
 
-// Make start their own network (look at grpcclientsuite setupsuite())
-func RunNetwork() {
+func (bot *Bot) OpenPosition(quoteToMove math.Int, leverage sdk.Dec) error {
 
-}
-
-func (bot *Bot) OpenPosition(quoteToMove sdk.Int, leverage sdk.Dec) error {
-	// var isLong bool
+	// var txResp sdk.TxResponse
+	// txResp.Logs
+	// var willBeLong bool
 	// if quoteToMove > 0 {
-	// 	isLong = true
+	// 	willBeLong = true
 	// } else {
-	// 	isLong = false
+	// 	willBeLongLong = false
 	// }
 
 	// bot.Gosdk.Tx.BroadcastMsgs()
@@ -247,6 +255,7 @@ func (bot *Bot) CloseAndOpenPosition(quoteToMove sdk.Int, pair string) error {
 }
 
 func (bot *Bot) ClosePosition(pair string) error {
+
 	return nil
 }
 
@@ -257,8 +266,31 @@ func (bot *Bot) QueryAddress(nodeDirName string) (sdk.AccAddress, error) {
 	addr, _, err := sdktestutil.GenerateSaveCoinKey(
 		bot.Gosdk.Keyring, nodeDirName, mnemonic, true, signAlgo[0],
 	)
+
 	return addr, err
 }
+
+// token balance query
+func (bot *Bot) FetchBalances(ctx context.Context) error {
+	moduleAccounts, err := bot.Gosdk.Query.Perp.ModuleAccounts(ctx, &perpTypes.QueryModuleAccountsRequest{})
+
+	if err != nil {
+		return err
+	}
+
+	bot.PopulateBalances(moduleAccounts)
+
+	return nil
+}
+
+func (bot *Bot) PopulateBalances(moduleAccounts *perpTypes.QueryModuleAccountsResponse) {
+	for _, perpAccount := range moduleAccounts.GetAccounts() {
+		for _, coin := range perpAccount.Balance {
+			bot.State.Funds[coin.Denom] = coin.Amount
+		}
+	}
+}
+
 func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 
 	positions, err := bot.Gosdk.Query.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
@@ -305,7 +337,11 @@ func (bot *Bot) FetchNewPrices(ctx context.Context) error {
 func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 	for index, value := range queryMarketsResp.AmmMarkets {
 		pair := value.Amm.Pair
-		bot.State.Amms[pair.String()] = queryMarketsResp.AmmMarkets[index].Amm
+		bot.State.Amms[pair.String()] = AmmFields{
+			Markets: queryMarketsResp.AmmMarkets[index].Amm,
+			Bias:    value.Amm.Bias(),
+		}
+
 	}
 
 }
@@ -354,7 +390,7 @@ func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
 	var quoteReserveMap = make(map[string]sdk.Dec)
 
 	for key, value := range bot.State.Amms {
-		quoteReserveMap[key] = value.QuoteReserve
+		quoteReserveMap[key] = value.Markets.QuoteReserve
 	}
 	// use for loop
 	var qp = make(map[string]sdk.Dec)
