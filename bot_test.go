@@ -233,7 +233,6 @@ func (s *BotSuite) RunTestFetchPositions(t *testing.T) {
 func (s *BotSuite) RunTestFetchBalances(t *testing.T) {
 	fundsErr := s.bot.FetchBalances(s.ctx)
 	s.NoError(fundsErr)
-	fmt.Print("Funds", s.bot.State.Funds)
 }
 
 func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {

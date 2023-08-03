@@ -14,9 +14,8 @@ import (
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
 	sdktestutil "github.com/cosmos/cosmos-sdk/testutil"
-	"github.com/joho/godotenv"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/joho/godotenv"
 )
 
 var _ = app.BankModule.Name
@@ -66,10 +65,6 @@ const (
 	CloseAndOpenOrder
 	DontTrade
 )
-
-func StoreTradeResult(txResp sdk.TxResponse) {
-
-}
 
 func main() {
 	var LOGGING_FILE = "test-log.txt"
@@ -127,8 +122,8 @@ func Run() {
 	for pair, quoteAmount := range quoteToMove {
 
 		bot.PerformTradeAction(pair, quoteAmount)
-
 	}
+
 }
 
 func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec) error {
