@@ -41,9 +41,16 @@ type TablePosition struct {
 
 type TableBalances struct {
 	gorm.Model
-	Pair        string
+	Denom       string
 	Amount      string
 	BlockHeight int64
+}
+
+func CreateAndConnectDB() BotDB {
+	botDB := new(BotDB)
+
+	botDB.ConnectToDB()
+	return *botDB
 }
 
 func (botdb *BotDB) ConnectToDB() {
@@ -116,9 +123,9 @@ func (botdb *BotDB) PopulatePositionTable(positions map[string]PositionFields, b
 }
 
 func (botdb *BotDB) PopulateBalancesTable(balances map[string]math.Int, blockHeight int64) {
-	for pair, balance := range balances {
+	for denom, balance := range balances {
 		botdb.DB.Create(&TableBalances{
-			Pair:        pair,
+			Denom:       denom,
 			Amount:      balance.String(),
 			BlockHeight: blockHeight,
 		})
@@ -127,7 +134,7 @@ func (botdb *BotDB) PopulateBalancesTable(balances map[string]math.Int, blockHei
 
 // Querying Prices
 
-func (botdb *BotDB) QueryPricesTableByBlock(blockHeight int64) ([]TablePrices, error) {
+func (botdb *BotDB) QueryPricesByBlock(blockHeight int64) ([]TablePrices, error) {
 	var prices []TablePrices
 	db := botdb.DB.Find(&prices, "block_height = ?", blockHeight)
 	return prices, db.Error
@@ -142,7 +149,7 @@ func (botdb *BotDB) QueryPricesTable() ([]TablePrices, error) {
 
 // Querying Positions
 
-func (botdb *BotDB) QueryPositionTableByBlock(blockHeight int64) ([]TablePosition, error) {
+func (botdb *BotDB) QueryPositionByBlock(blockHeight int64) ([]TablePosition, error) {
 	var positions []TablePosition
 	db := botdb.DB.Find(&positions, "block_height = ?", blockHeight)
 	return positions, db.Error
@@ -186,54 +193,59 @@ func (botdb *BotDB) QueryBalancesTable() ([]TableBalances, error) {
 	return allBalances, db.Error
 }
 
-func (botdb *BotDB) NewDbExportFromString(posJson string, ammJson string, balJson string, priceJson string) {
-	var positions TablePosition
-	json.Unmarshal([]byte(posJson), &positions)
-
-	var amms TableAmms
-	json.Unmarshal([]byte(ammJson), &amms)
-
-	var balances TableBalances
-	json.Unmarshal([]byte(balJson), &balances)
-
-	var prices TablePrices
-	json.Unmarshal([]byte(priceJson), &prices)
-
-	botdb.ClearDB()
-
-	botdb.DB.Create(&TablePosition{
-		Model:         gorm.Model{},
-		Pair:          positions.Pair,
-		UnrealizedPnl: positions.UnrealizedPnl,
-		Size:          positions.Size,
-		Trader:        positions.Trader,
-		BlockHeight:   positions.BlockHeight,
-	})
-
-	botdb.DB.Create(&TablePrices{
-		Model:       gorm.Model{},
-		Pair:        prices.Pair,
-		IndexPrice:  prices.IndexPrice,
-		MarkPrice:   prices.MarkPrice,
-		BlockHeight: prices.BlockHeight,
-	})
-	botdb.DB.Create(&TableAmms{
-		Model:        gorm.Model{},
-		Pair:         amms.Pair,
-		BaseReserve:  amms.BaseReserve,
-		QuoteReserve: amms.QuoteReserve,
-		BlockHeight:  amms.BlockHeight,
-		Bias:         amms.Bias,
-	})
-	botdb.DB.Create(&TableBalances{
-		Model:       gorm.Model{},
-		Pair:        balances.Pair,
-		Amount:      balances.Amount,
-		BlockHeight: balances.BlockHeight,
-	})
+type DBRecords struct {
+	PositionRecords []TablePosition `json:"positions"`
+	AmmRecords      []TableAmms     `json:"amms"`
+	BalanceRecords  []TableBalances `json:"balances"`
+	PriceRecords    []TablePrices   `json:"prices"`
 }
 
-func (botdb *BotDB) String() string {
+func NewDBRecordsFromString(recordsJson string) (DBRecords, error) {
+	var dbRecords DBRecords
+	err := json.Unmarshal([]byte(recordsJson), &dbRecords)
 
-	return ""
+	records := DBRecords{
+		PositionRecords: dbRecords.PositionRecords,
+		AmmRecords:      dbRecords.AmmRecords,
+		BalanceRecords:  dbRecords.BalanceRecords,
+		PriceRecords:    dbRecords.PriceRecords,
+	}
+	return records, err
+}
+
+func DBRecordsToString(positions []TablePosition, amms []TableAmms, balances []TableBalances, prices []TablePrices) string {
+	dbRecords := DBRecords{
+		PositionRecords: positions,
+		AmmRecords:      amms,
+		BalanceRecords:  balances,
+		PriceRecords:    prices,
+	}
+	return dbRecords.String()
+}
+
+func (botdb *BotDB) ImportDbRecords(records DBRecords) {
+	for _, positions := range records.PositionRecords {
+		botdb.DB.Create(&positions)
+	}
+
+	for _, prices := range records.PriceRecords {
+		botdb.DB.Create(&prices)
+	}
+	for _, amms := range records.AmmRecords {
+		botdb.DB.Create(&amms)
+	}
+	for _, balances := range records.BalanceRecords {
+		botdb.DB.Create(&balances)
+	}
+}
+
+// json golang struct tags
+
+// Create a dbrecord to test funcs
+
+func (records *DBRecords) String() string {
+
+	bz, _ := json.Marshal(records)
+
+	return string(bz)
 }

@@ -89,12 +89,16 @@ func Run() {
 
 	var bot = NewBot().PopulateGosdk(GRPC_ENDPOINT, CHAIN_ID)
 	context := context.Background()
+	db := CreateAndConnectDB()
 
 	// Querying info for Prices/Amms structs
 	pricesErr := bot.FetchNewPrices(context)
 
 	if pricesErr != nil {
 		log.Fatalf("Cannot FetchNewPrices(): %v", pricesErr)
+	} else {
+		db.PopulateAmmsTable(bot.State.Amms, 1)
+		db.PopulatePricesTable(bot.State.Prices, 1)
 	}
 
 	// Querying trader address to find positions by
@@ -109,12 +113,29 @@ func Run() {
 
 	if positionsErr != nil {
 		log.Fatalf("Cannot FetchPositions(): %v", positionsErr)
+	} else {
+		db.PopulatePositionTable(bot.State.Positions, 1)
 	}
 
 	balancesErr := bot.FetchBalances(context)
 
 	if balancesErr != nil {
 		log.Fatalf("Cannot FetchBalances: %v", balancesErr)
+	} else {
+		db.PopulateBalancesTable(bot.State.Funds, 1)
+	}
+
+	amms, err := db.QueryAmmByBlock(1)
+	prices, err := db.QueryPricesByBlock(1)
+	balances, err := db.QueryBalancesByBlock(1)
+	positions, err := db.QueryPositionByBlock(1)
+
+	if err != nil {
+		fmt.Print(err)
+	} else {
+		dbJson := DBRecordsToString(positions, amms, balances, prices)
+		fmt.Print(dbJson)
+		db.ClearDB()
 	}
 
 	quoteToMove := QuoteNeededToMovePrice(*bot)

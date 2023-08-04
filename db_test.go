@@ -10,7 +10,9 @@ import (
 
 type DBSuite struct {
 	suite.Suite
-	DB *fbot.BotDB
+	DB            *fbot.BotDB
+	records       fbot.DBRecords
+	recordsString string
 }
 
 func TestDB(t *testing.T) {
@@ -21,7 +23,8 @@ func (db *DBSuite) TestDBSuite() {
 	db.T().Run("RunTestPopulatePricesTable", db.RunTestPopulatePricesTable)
 	db.T().Run("RunTestQueryPricesByBlock", db.RunTestQueryPricesByBlock)
 	db.T().Run("RunTestQueryAllPrices", db.RunTestQueryAllPrices)
-	db.T().Run("RunTestNewDbExportFromString", db.RunTestNewDbExportFromString)
+	db.T().Run("RunTestNewDBRecordsFromString", db.RunTestNewDBRecordsFromString)
+	db.T().Run("RunTestRecordsString", db.RunTestRecordsString)
 	db.TearDownSuite()
 }
 
@@ -50,7 +53,7 @@ func (db *DBSuite) RunTestPopulatePricesTable(t *testing.T) {
 }
 
 func (db *DBSuite) RunTestQueryPricesByBlock(t *testing.T) {
-	prices, err := db.DB.QueryPricesTableByBlock(1)
+	prices, err := db.DB.QueryPricesByBlock(1)
 	db.NoError(err)
 	for _, price := range prices {
 		db.NotNil(t, price.Pair)
@@ -70,27 +73,52 @@ func (db *DBSuite) RunTestQueryAllPrices(t *testing.T) {
 	}
 }
 
-func (db *DBSuite) RunTestNewDbExportFromString(t *testing.T) {
-	db.DB.NewDbExportFromString(`{
-		"Pair":       "ubtc:unusd",
-		"UnrealizedPnl": "42",
-		"Size":          "100",
-		"Trader":        "nibi1234",
-		"BlockHeight":   1,
-	}`, `{
-		"Pair":       "ueth:unusd",
-		"BaseReserve": "500",
-		"QuoteReserve":          "500",
-		"BlockHeight":        "1",
-		"Bias":   -60,
-	}`, `{
-		"Pair":	"ubtc:unusd",
-		"Amount": "700",
-		"BlockHeight":   1,
-	}`, `{
-		"Pair":       "ueth:unusd",
-		"IndexPrice": "3200",
-		"MarkPrice":          "2600",
-		"BlockHeight":   1,
-	}`)
+func (db *DBSuite) RunTestNewDBRecordsFromString(t *testing.T) {
+
+	db.recordsString = `
+	{
+		"amms": [
+			{
+				"Pair": "ubtc:unusd",
+				"BaseReserve": "100",
+				"QuoteReserve": "200",
+				"BlockHeight": 1234,
+				"Bias": "1000"
+			}
+		],
+		"prices": [
+			{
+				"Pair": "ueth:unusd",
+				"IndexPrice": "10000",
+				"MarkPrice": "10200",
+				"BlockHeight": 1234
+			}
+		],
+		"positions": [
+			{
+				"Pair": "ubtc:unusd",
+				"UnrealizedPnl": "100",
+				"Size": "1",
+				"Trader": "nibi1234",
+				"BlockHeight": 1234
+			}
+		],
+		"balances": [
+			{
+				"Pair": "ueth",
+				"Amount": "10",
+				"BlockHeight": 1234
+			}
+		]
+	}`
+
+	records, err := fbot.NewDBRecordsFromString(db.recordsString)
+	db.NoError(err)
+	db.NotNil(t, records)
+	db.records = records
+}
+
+func (db *DBSuite) RunTestRecordsString(t *testing.T) {
+	recordJson := db.records.String()
+	db.NotNil(recordJson)
 }
