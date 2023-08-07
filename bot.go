@@ -13,6 +13,7 @@ import (
 	oracleTypes "github.com/NibiruChain/nibiru/x/oracle/types"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	sdktestutil "github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/joho/godotenv"
@@ -38,9 +39,9 @@ type AmmFields struct {
 }
 
 type Bot struct {
-	State BotState
-	Gosdk *gonibi.NibiruClient
-	// db field
+	State     BotState
+	Gosdk     *gonibi.NibiruClient
+	RpcClient *rpchttp.HTTP
 }
 
 type Prices struct {
@@ -90,15 +91,21 @@ func Run() {
 	var bot = NewBot().PopulateGosdk(GRPC_ENDPOINT, CHAIN_ID)
 	context := context.Background()
 	db := CreateAndConnectDB()
+	db.ClearDB()
 
 	// Querying info for Prices/Amms structs
 	pricesErr := bot.FetchNewPrices(context)
+	blockHeight, blockHeightErr := bot.GetBlockHeight(context)
+
+	if blockHeightErr != nil {
+		log.Fatalf("Cannot GetBlockHeight(): %v", blockHeight)
+	}
 
 	if pricesErr != nil {
 		log.Fatalf("Cannot FetchNewPrices(): %v", pricesErr)
 	} else {
-		db.PopulateAmmsTable(bot.State.Amms, 1)
-		db.PopulatePricesTable(bot.State.Prices, 1)
+		db.PopulateAmmsTable(bot.State.Amms, blockHeight)
+		db.PopulatePricesTable(bot.State.Prices, blockHeight)
 	}
 
 	// Querying trader address to find positions by
@@ -114,7 +121,7 @@ func Run() {
 	if positionsErr != nil {
 		log.Fatalf("Cannot FetchPositions(): %v", positionsErr)
 	} else {
-		db.PopulatePositionTable(bot.State.Positions, 1)
+		db.PopulatePositionTable(bot.State.Positions, blockHeight)
 	}
 
 	balancesErr := bot.FetchBalances(context)
@@ -122,26 +129,22 @@ func Run() {
 	if balancesErr != nil {
 		log.Fatalf("Cannot FetchBalances: %v", balancesErr)
 	} else {
-		db.PopulateBalancesTable(bot.State.Funds, 1)
+		db.PopulateBalancesTable(bot.State.Funds, blockHeight)
 	}
 
-	amms, err := db.QueryAmmByBlock(1)
-	prices, err := db.QueryPricesByBlock(1)
-	balances, err := db.QueryBalancesByBlock(1)
-	positions, err := db.QueryPositionByBlock(1)
+	dbTables, errs := db.QueryAllTablesToJson()
 
-	if err != nil {
-		fmt.Print(err)
-	} else {
-		dbJson := DBRecordsToString(positions, amms, balances, prices)
-		fmt.Print(dbJson)
-		db.ClearDB()
+	for _, err := range errs {
+		if err != nil {
+			log.Fatalf("Cannot QueryTable: %v", err)
+		}
 	}
+
+	fmt.Print(dbTables)
 
 	quoteToMove := QuoteNeededToMovePrice(*bot)
 
 	for pair, quoteAmount := range quoteToMove {
-
 		bot.PerformTradeAction(pair, quoteAmount)
 	}
 
@@ -324,7 +327,6 @@ func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 
 func (bot *Bot) PopulatePositions(positions *perpTypes.QueryPositionsResponse) {
 	for _, positionResponse := range positions.GetPositions() {
-
 		pair := positionResponse.Position.Pair
 		bot.State.Positions[pair.String()] = PositionFields{
 			Positon:       positionResponse.Position,
@@ -357,7 +359,6 @@ func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 			Markets: queryMarketsResp.AmmMarkets[index].Amm,
 			Bias:    value.Amm.Bias(),
 		}
-
 	}
 
 }
@@ -427,6 +428,24 @@ func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
 
 	return quoteToMove
 
+}
+
+func (bot *Bot) GetBlockHeight(ctx context.Context) (int64, error) {
+	rpc, rpcErr := rpchttp.New(gonibi.DefaultNetworkInfo.TmRpcEndpoint,
+		"/websocket")
+
+	if rpcErr != nil {
+		return -1, rpcErr
+	}
+
+	abciInfo, abciErr := rpc.ABCIInfo(ctx)
+
+	if abciErr != nil {
+		return -1, abciErr
+	}
+
+	latestBlockHeight := abciInfo.Response.LastBlockHeight
+	return latestBlockHeight, nil
 }
 
 // func LoggingFilename() string {

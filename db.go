@@ -67,7 +67,6 @@ func (botdb *BotDB) ConnectToDB() {
 }
 
 func (botdb *BotDB) ClearDB() {
-
 	// botdb.DB.Delete(&TablePosition{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TablePrices{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TableAmms{})
@@ -191,6 +190,31 @@ func (botdb *BotDB) QueryBalancesTable() ([]TableBalances, error) {
 	db := botdb.DB.Find(&allBalances)
 
 	return allBalances, db.Error
+}
+
+// Querying All
+func (botdb *BotDB) QueryAllTablesToJson() (string, []error) {
+	var errors []error
+	amms, ammErr := botdb.QueryAmmTable()
+	prices, pricesErr := botdb.QueryPricesTable()
+	balances, balErr := botdb.QueryBalancesTable()
+	positions, posErr := botdb.QueryPositionTable()
+
+	errors = append(errors, ammErr, pricesErr, balErr, posErr)
+
+	return DBRecordsToString(positions, amms, balances, prices), errors
+}
+
+func (botdb *BotDB) QueryAllTablesByBlockToJson(blockHeight int64) (string, []error) {
+	var errors []error
+	amms, ammErr := botdb.QueryAmmByBlock(blockHeight)
+	prices, pricesErr := botdb.QueryPricesByBlock(blockHeight)
+	balances, balErr := botdb.QueryBalancesByBlock(blockHeight)
+	positions, posErr := botdb.QueryPositionByBlock(blockHeight)
+
+	errors = append(errors, ammErr, pricesErr, balErr, posErr)
+
+	return DBRecordsToString(positions, amms, balances, prices), errors
 }
 
 type DBRecords struct {
