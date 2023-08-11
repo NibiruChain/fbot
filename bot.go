@@ -420,10 +420,18 @@ func (bot *Bot) GetAddress() (sdk.AccAddress, error) {
 	return record.GetAddress()
 }
 
+// type Portofolio struct {
+// 	splits (proportion of each balance)
+// 	balances map[string]sdk.Int
+// 	howMuchInEachPair map[string]sdk.Int
+// }
+// if trade sizes are small enough, no need to think about allocation
+
 // token balance query
 func (bot *Bot) FetchBalances(ctx context.Context) error {
 	moduleAccounts, err := bot.Gosdk.Querier.Perp.ModuleAccounts(ctx, &perpTypes.QueryModuleAccountsRequest{})
 
+	// create a map
 	if err != nil {
 		return err
 	}

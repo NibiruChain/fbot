@@ -1,0 +1,22 @@
+name: 🧪 Tests
+
+on:
+  push: 
+    branches: ["main", "release/*"]
+  pull_request:
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out the repo"
+        uses: actions/checkout@v3
+
+      - name: "Set up Go"
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.19
+          cache: true
+
+      - name: "Run tests"
+        run: go test ./... 
