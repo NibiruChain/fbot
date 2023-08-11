@@ -50,6 +50,7 @@ func (db *DBSuite) RunTestPopulatePricesTable(t *testing.T) {
 		},
 	}
 	db.DB.PopulatePricesTable(Prices, 1)
+
 }
 
 func (db *DBSuite) RunTestQueryPricesByBlock(t *testing.T) {
@@ -66,10 +67,12 @@ func (db *DBSuite) RunTestQueryPricesByBlock(t *testing.T) {
 func (db *DBSuite) RunTestQueryAllPrices(t *testing.T) {
 	qBlock, err := db.DB.QueryPricesTable()
 	db.NoError(err)
+	//fmt.Printf("Prices block: %v \n \n", qBlock)
 	for _, price := range qBlock {
 		db.NotNil(t, price.Pair)
 		db.NotNil(t, price.IndexPrice)
 		db.NotNil(t, price.MarkPrice)
+		//fmt.Printf("PRICES STRING: %s", price)
 	}
 }
 
@@ -120,5 +123,5 @@ func (db *DBSuite) RunTestNewDBRecordsFromString(t *testing.T) {
 
 func (db *DBSuite) RunTestRecordsString(t *testing.T) {
 	recordJson := db.records.String()
-	db.NotNil(recordJson)
+	db.NotNil(t, recordJson)
 }

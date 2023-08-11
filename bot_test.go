@@ -1,14 +1,12 @@
 package fbot_test
 
 import (
-	"bufio"
 	"context"
 	"fbot"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 
+	"cosmossdk.io/math"
 	"github.com/NibiruChain/nibiru/app"
 	"github.com/NibiruChain/nibiru/x/common"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
@@ -16,6 +14,8 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	hex "encoding/hex"
 
 	"google.golang.org/grpc"
 
@@ -28,17 +28,13 @@ import (
 type BotSuite struct {
 	suite.Suite
 	bot     *fbot.Bot
-	gosdk   *gonibi.NibiruClient
 	ctx     context.Context
 	address sdk.AccAddress
+	chain   *BlockChain
 }
 
 func TestBot(t *testing.T) {
 	suite.Run(t, new(BotSuite))
-}
-
-func TestRun(t *testing.T) {
-	fbot.Run()
 }
 
 // Example of iterative test cases
@@ -72,7 +68,6 @@ func TestIsPosAgainstMarket(t *testing.T) {
 }
 
 type BlockChain struct {
-	suite.Suite
 	gosdk    *gonibi.NibiruClient
 	grpcConn *grpc.ClientConn
 	cfg      *cli.Config
@@ -80,28 +75,34 @@ type BlockChain struct {
 	val      *cli.Validator
 }
 
-func (chain *BlockChain) SetupChain(t *testing.T) {
+func SetupChain(t *testing.T) *BlockChain {
+
+	chain := new(BlockChain)
 	app.SetPrefixes(app.AccountAddressPrefix)
 	encConfig := app.MakeEncodingConfig()
 	genState := genesis.NewTestGenesisState(encConfig)
+	genState = genesis.AddPerpV2Genesis(genState)
+
 	cliCfg := cli.BuildNetworkConfig(genState)
+
 	chain.cfg = &cliCfg
 	chain.cfg.NumValidators = 1
 
 	network, err := cli.New(
-		chain.T(),
-		chain.T().TempDir(),
+		t,
+		t.TempDir(),
 		*chain.cfg,
 	)
-	chain.NoError(err)
+	require.NoError(t, err)
 	chain.network = network
-	chain.NoError(chain.network.WaitForNextBlock())
+	require.NoError(t, chain.network.WaitForNextBlock())
 
 	chain.val = chain.network.Validators[0]
 	AbsorbServerConfig(chain.cfg, chain.val.AppConfig)
 	AbsorbTmConfig(chain.cfg, chain.val.Ctx.Config)
-	chain.ConnectGrpc()
+	chain.ConnectGrpc(t)
 
+	return chain
 }
 
 func AbsorbTmConfig(
@@ -119,97 +120,75 @@ func AbsorbServerConfig(
 	return cfg
 }
 
-func (b *BlockChain) ConnectGrpc() {
-	grpcUrl := b.val.AppConfig.GRPC.Address
+func (chain *BlockChain) ConnectGrpc(t *testing.T) {
+	grpcUrl := chain.val.AppConfig.GRPC.Address
 	grpcConn, err := gonibi.GetGRPCConnection(
 		grpcUrl, true, 5,
 	)
-	b.NoError(err)
-	b.NotNil(grpcConn)
-	b.grpcConn = grpcConn
-}
-
-func TestSetupLoggingFile(t *testing.T) {
-	filename := "temp-test"
-	if _, err := os.Stat(filename); err == nil {
-		err := os.Remove(filename)
-		require.NoError(t, err)
-	}
-
-	fbot.SetupLoggingFile(filename)
-	file, err := os.Open(filename)
-	defer file.Close()
 	require.NoError(t, err)
-
-	var hasExpectedContent bool
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, fmt.Sprintf("logger name: %v", filename)) {
-			hasExpectedContent = true
-		}
-	}
-
-	err = scanner.Err()
-	require.NoError(t, err)
-	require.True(t, hasExpectedContent)
-
-	require.NoError(t, os.Remove(filename))
+	require.NotNil(t, grpcConn)
+	chain.grpcConn = grpcConn
 }
-
-// func (chain *BlockChain) TestChain() {
-// 	chain.T().Run("RunSetUpChain", chain.SetupChain)
-// }
 
 func (s *BotSuite) TestBotSuite() {
+	s.chain = SetupChain(s.T())
 	s.SetupGoSdk()
-	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
-	s.T().Run("RunTestPopulateAmms", s.RunTestPopulateAmms)
-	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
-	s.T().Run("RunTestQueryAddress", s.RunTestQueryAddress)
-	s.T().Run("RunTestFetchPositions", s.RunTestFetchPositions)
-	s.T().Run("RunTestFetchPositions", s.RunTestFetchPositions)
-	s.T().Run("RunTestFetchBalances", s.RunTestFetchBalances)
+	s.T().Run("RunTest", s.Run)
+	// s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
+	// s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
+	// s.T().Run("RunTestFetchBalances", s.RunTestFetchBalances)
+	// s.bot.DB = fbot.CreateAndConnectDB()
+	// s.T().Run("RunTestGetBlockHeight", s.RunTestGetBlockHeight)
+	// s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
+	// s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
+	s.bot.DB.ClearDB()
+	s.chain.network.Cleanup()
 }
 
 func (s *BotSuite) SetupGoSdk() {
-	netInfo := gonibi.DefaultNetworkInfo
-	grpcClientConnection, err := gonibi.GetGRPCConnection(
-		netInfo.GrpcEndpoint, true, 5)
-
-	s.Require().NoError(err)
-
-	gosdk, err := gonibi.NewNibiruClient(netInfo.ChainID, grpcClientConnection)
-	s.NoError(err)
 	s.ctx = context.Background()
 
-	s.gosdk = &gosdk
-	s.bot = fbot.NewBot().PopulateGosdkFromNetinfo(netInfo)
+	keyRecord, err := s.chain.val.ClientCtx.Keyring.KeyByAddress(
+		s.chain.val.Address)
+
+	s.NoError(err)
+
+	bot, err := fbot.NewBot(
+		fbot.BotArgs{
+			ChainId:     s.chain.cfg.ChainID,
+			GrpcConn:    s.chain.grpcConn,
+			RpcEndpt:    s.chain.val.RPCAddress,
+			Mnemonic:    "",
+			UseMnemonic: false,
+			KeyName:     keyRecord.Name,
+		},
+	)
+
+	s.NoError(err)
+	s.bot = bot
+	s.bot.Gosdk.Keyring = s.chain.val.ClientCtx.Keyring
+
+	s.Equal(s.bot.Gosdk.GrpcClient, s.chain.grpcConn)
+
 }
 
-// take nodeDirName string
-func (s *BotSuite) RunTestQueryAddress(t *testing.T) {
-	addr, err := s.bot.QueryAddress(s.T().TempDir())
+func (s *BotSuite) Run(t *testing.T) {
+	err := fbot.Run(s.bot)
 	s.NoError(err)
-	s.NotNil(addr)
-	s.address = addr
 }
 
 func (s *BotSuite) RunTestPopulateAmms(t *testing.T) {
 
-	resp, err := s.gosdk.Query.Perp.QueryMarkets(
+	resp, err := s.bot.Gosdk.Querier.Perp.QueryMarkets(
 		s.ctx, &perpTypes.QueryMarketsRequest{},
 	)
 	s.NoErrorf(err, "Perp Resp: %v", resp)
 
-	var bot = fbot.NewBot()
+	bot := s.bot
 
 	bot.PopulateAmms(resp)
 	s.NotNil(bot.State.Amms["ubtc:unusd"])
 	s.NotNil(bot.State.Amms["ueth:unusd"])
-
-	//gosdk, err := gonibi.NewNibiruClient(netInfo.ChainID, grpcClientConnection)
-	//gosdk.Tx.BroadcastMsgs()
 
 }
 
@@ -217,16 +196,6 @@ func (s *BotSuite) RunTestFetchPrices(t *testing.T) {
 
 	err := s.bot.FetchNewPrices(s.ctx)
 	s.NoError(err)
-
-}
-
-func (s *BotSuite) RunTestFetchPositions(t *testing.T) {
-
-	sdkAddr, addrErr := s.bot.QueryAddress(s.T().TempDir())
-	s.NoError(addrErr)
-	s.address = sdkAddr
-	fetchPosErr := s.bot.FetchPositions(s.address.String(), s.ctx)
-	s.NoError(fetchPosErr)
 
 }
 
@@ -375,11 +344,12 @@ func (s *BotSuite) RunTestQuoteNeededToMovePrice(t *testing.T) {
 		},
 	}
 
-	var quoteToMovePrice = fbot.QuoteNeededToMovePrice(*s.bot)
+	quoteToMovePrice, err := s.bot.QuoteNeededToMovePrice()
+	s.NoError(err)
 	btcQp, err := common.SqrtDec(sdk.NewDec(100).Quo(sdk.NewDec(125)))
-	if err != nil {
-		fmt.Println(err)
-	}
+
+	s.NoError(err)
+
 	btcReserve := sdk.NewDec(10)
 
 	ethQp := btcQp
@@ -387,4 +357,52 @@ func (s *BotSuite) RunTestQuoteNeededToMovePrice(t *testing.T) {
 
 	s.Equal(quoteToMovePrice["ubtc:unusd"], btcReserve.Quo(btcQp).Sub(btcReserve).Mul(sdk.NewDec(-1)))
 	s.NotNil(quoteToMovePrice["ueth:unusd"], ethReserve.Quo(ethQp).Sub(ethReserve).Mul(sdk.NewDec(-1)))
+}
+
+func (s *BotSuite) RunTestGetBlockHeight(t *testing.T) {
+	_, err := s.bot.GetBlockHeight(s.ctx, s.chain.val.RPCAddress)
+	s.NoError(err)
+}
+
+func (s *BotSuite) RunTestOpenPosition(t *testing.T) {
+
+	s.address = s.chain.val.Address
+
+	addr, err := s.bot.GetAddress()
+	s.NoError(err)
+
+	s.NoError(s.chain.network.WaitForNextBlock())
+
+	resp, err := s.bot.OpenPosition(addr, math.NewInt(10),
+		math.LegacyNewDec(1), "ubtc:unusd", s.ctx)
+	s.NoError(err)
+
+	s.NoError(s.chain.network.WaitForNextBlock())
+	hashBz, err := hex.DecodeString(resp.TxHash)
+	txHashQueryResp, err := s.bot.Gosdk.CometRPC.Tx(s.ctx, hashBz, false)
+	s.NoErrorf(err, "Query Response: %s", txHashQueryResp.Hash)
+	s.NotNil(txHashQueryResp)
+	s.FetchPositions(t)
+
+}
+
+func (s *BotSuite) RunTestClosePosition(t *testing.T) {
+
+	s.NoError(s.chain.network.WaitForNextBlock())
+	_, err := s.bot.ClosePosition(s.address, "ubtc:unusd", s.ctx)
+	s.NoError(err)
+	s.FetchPositions(t)
+
+}
+
+func (s *BotSuite) FetchPositions(t *testing.T) {
+
+	err := s.bot.FetchAndPopPositionsDB(s.address, s.ctx)
+	s.NoError(err)
+	positions, err := s.bot.DB.QueryPositionTable()
+	s.NoError(err)
+	s.NotNil(positions)
+
+	fmt.Println("POSITIONS: ", positions)
+
 }

@@ -1,49 +1,13 @@
 package fbot
 
 import (
-	"encoding/json"
-
-	"cosmossdk.io/math"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 type BotDB struct {
 	DB *gorm.DB
-}
-
-// DB structs
-type TableAmms struct {
-	gorm.Model
-	Pair         string
-	BaseReserve  string
-	QuoteReserve string
-	BlockHeight  int64
-	Bias         string
-}
-
-type TablePrices struct {
-	gorm.Model
-	Pair        string
-	IndexPrice  string
-	MarkPrice   string
-	BlockHeight int64
-}
-
-type TablePosition struct {
-	gorm.Model
-	Pair          string
-	UnrealizedPnl string
-	Size          string
-	Trader        string
-	BlockHeight   int64
-}
-
-type TableBalances struct {
-	gorm.Model
-	Denom       string
-	Amount      string
-	BlockHeight int64
 }
 
 func CreateAndConnectDB() BotDB {
@@ -121,13 +85,16 @@ func (botdb *BotDB) PopulatePositionTable(positions map[string]PositionFields, b
 	}
 }
 
-func (botdb *BotDB) PopulateBalancesTable(balances map[string]math.Int, blockHeight int64) {
-	for denom, balance := range balances {
-		botdb.DB.Create(&TableBalances{
-			Denom:       denom,
-			Amount:      balance.String(),
-			BlockHeight: blockHeight,
-		})
+func (botdb *BotDB) PopulateBalancesTable(balances map[string]sdk.Coins, blockHeight int64) {
+	for trader, coins := range balances {
+		for _, coin := range coins {
+			botdb.DB.Create(&TableBalances{
+				Trader:      trader,
+				Denom:       coin.Denom,
+				Amount:      coin.Amount.String(),
+				BlockHeight: blockHeight,
+			})
+		}
 	}
 }
 
@@ -215,61 +182,4 @@ func (botdb *BotDB) QueryAllTablesByBlockToJson(blockHeight int64) (string, []er
 	errors = append(errors, ammErr, pricesErr, balErr, posErr)
 
 	return DBRecordsToString(positions, amms, balances, prices), errors
-}
-
-type DBRecords struct {
-	PositionRecords []TablePosition `json:"positions"`
-	AmmRecords      []TableAmms     `json:"amms"`
-	BalanceRecords  []TableBalances `json:"balances"`
-	PriceRecords    []TablePrices   `json:"prices"`
-}
-
-func NewDBRecordsFromString(recordsJson string) (DBRecords, error) {
-	var dbRecords DBRecords
-	err := json.Unmarshal([]byte(recordsJson), &dbRecords)
-
-	records := DBRecords{
-		PositionRecords: dbRecords.PositionRecords,
-		AmmRecords:      dbRecords.AmmRecords,
-		BalanceRecords:  dbRecords.BalanceRecords,
-		PriceRecords:    dbRecords.PriceRecords,
-	}
-	return records, err
-}
-
-func DBRecordsToString(positions []TablePosition, amms []TableAmms, balances []TableBalances, prices []TablePrices) string {
-	dbRecords := DBRecords{
-		PositionRecords: positions,
-		AmmRecords:      amms,
-		BalanceRecords:  balances,
-		PriceRecords:    prices,
-	}
-	return dbRecords.String()
-}
-
-func (botdb *BotDB) ImportDbRecords(records DBRecords) {
-	for _, positions := range records.PositionRecords {
-		botdb.DB.Create(&positions)
-	}
-
-	for _, prices := range records.PriceRecords {
-		botdb.DB.Create(&prices)
-	}
-	for _, amms := range records.AmmRecords {
-		botdb.DB.Create(&amms)
-	}
-	for _, balances := range records.BalanceRecords {
-		botdb.DB.Create(&balances)
-	}
-}
-
-// json golang struct tags
-
-// Create a dbrecord to test funcs
-
-func (records *DBRecords) String() string {
-
-	bz, _ := json.Marshal(records)
-
-	return string(bz)
 }

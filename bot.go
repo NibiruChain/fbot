@@ -14,9 +14,10 @@ import (
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
-	sdktestutil "github.com/cosmos/cosmos-sdk/testutil"
+	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
 )
 
 var _ = app.BankModule.Name
@@ -25,7 +26,7 @@ type BotState struct {
 	Positions map[string]PositionFields
 	Amms      map[string]AmmFields
 	Prices    map[string]Prices
-	Funds     map[string]math.Int
+	Funds     map[string]sdk.Coins
 }
 
 type PositionFields struct {
@@ -42,6 +43,9 @@ type Bot struct {
 	State     BotState
 	Gosdk     *gonibi.NibiruClient
 	RpcClient *rpchttp.HTTP
+	TmrpcAddr string
+	DB        BotDB
+	KeyName   string
 }
 
 type Prices struct {
@@ -74,11 +78,11 @@ func main() {
 
 }
 
-func Run() {
-
+func LoadBot() (*Bot, error) {
 	godotenv.Load()
 	var GRPC_ENDPOINT = os.Getenv("GRPC_ENDPONT")
 	var CHAIN_ID = os.Getenv("CHAIN_ID")
+	var TMRPC_ENDPOINT = os.Getenv("TMRPC_ENDPOINT")
 
 	// Use default network info if .env is empty
 	if GRPC_ENDPOINT == "" {
@@ -87,70 +91,79 @@ func Run() {
 	if CHAIN_ID == "" {
 		CHAIN_ID = gonibi.DefaultNetworkInfo.ChainID
 	}
-
-	var bot = NewBot().PopulateGosdk(GRPC_ENDPOINT, CHAIN_ID)
-	context := context.Background()
-	db := CreateAndConnectDB()
-	db.ClearDB()
-
-	// Querying info for Prices/Amms structs
-	pricesErr := bot.FetchNewPrices(context)
-	blockHeight, blockHeightErr := bot.GetBlockHeight(context)
-
-	if blockHeightErr != nil {
-		log.Fatalf("Cannot GetBlockHeight(): %v", blockHeight)
+	if TMRPC_ENDPOINT == "" {
+		TMRPC_ENDPOINT = gonibi.DefaultNetworkInfo.TmRpcEndpoint
 	}
 
-	if pricesErr != nil {
-		log.Fatalf("Cannot FetchNewPrices(): %v", pricesErr)
-	} else {
-		db.PopulateAmmsTable(bot.State.Amms, blockHeight)
-		db.PopulatePricesTable(bot.State.Prices, blockHeight)
+	grpcClientConnection, err := gonibi.GetGRPCConnection(
+		GRPC_ENDPOINT, true, 5)
+
+	if err != nil {
+		return nil, err
 	}
 
-	// Querying trader address to find positions by
-	sdkAddress, addressErr := bot.QueryAddress(os.TempDir())
-
-	if addressErr != nil {
-		log.Fatalf("Cannot QueryAddress(): %v", sdkAddress)
-	}
-
-	// Querying positions and storing in bot.State
-	positionsErr := bot.FetchPositions(sdkAddress.String(), context)
-
-	if positionsErr != nil {
-		log.Fatalf("Cannot FetchPositions(): %v", positionsErr)
-	} else {
-		db.PopulatePositionTable(bot.State.Positions, blockHeight)
-	}
-
-	balancesErr := bot.FetchBalances(context)
-
-	if balancesErr != nil {
-		log.Fatalf("Cannot FetchBalances: %v", balancesErr)
-	} else {
-		db.PopulateBalancesTable(bot.State.Funds, blockHeight)
-	}
-
-	dbTables, errs := db.QueryAllTablesToJson()
-
-	for _, err := range errs {
-		if err != nil {
-			log.Fatalf("Cannot QueryTable: %v", err)
-		}
-	}
-
-	fmt.Print(dbTables)
-
-	quoteToMove := QuoteNeededToMovePrice(*bot)
-
-	for pair, quoteAmount := range quoteToMove {
-		bot.PerformTradeAction(pair, quoteAmount)
-	}
+	return NewBot(BotArgs{
+		ChainId:     CHAIN_ID,
+		GrpcConn:    grpcClientConnection,
+		RpcEndpt:    TMRPC_ENDPOINT,
+		Mnemonic:    os.Getenv("VALIDATOR_MNEMONIC"),
+		UseMnemonic: true,
+		KeyName:     KEY_NAME,
+	})
 
 }
 
-func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec) error {
+func Run(bot *Bot) error {
+
+	context := context.Background()
+
+	// Querying info for Prices/Amms structs
+	err := bot.FetchNewPrices(context)
+	if err != nil {
+		return fmt.Errorf("Cannot FetchNewPrices(): %s", err)
+	}
+
+	blockHeight, err := bot.GetBlockHeight(context, bot.TmrpcAddr)
+	if err != nil {
+		return fmt.Errorf("Cannot GetHeight(): %s", err)
+	} else {
+		bot.DB.PopulateAmmsTable(bot.State.Amms, blockHeight)
+		bot.DB.PopulatePricesTable(bot.State.Prices, blockHeight)
+	}
+
+	//Querying trader address to find positions by
+	sdkAddress, err := bot.GetAddress()
+
+	if err != nil {
+		return fmt.Errorf("Cannot QueryAddress(): %s", err)
+	}
+
+	err = bot.FetchBalances(context)
+
+	if err != nil {
+		return fmt.Errorf("Cannot FetchBalances: %s", err)
+	} else {
+		bot.DB.PopulateBalancesTable(bot.State.Funds, blockHeight)
+	}
+
+	quoteToMove, err := bot.QuoteNeededToMovePrice()
+
+	if err != nil {
+		return fmt.Errorf("Cannot FindQuoteToMove: %s", err)
+	}
+
+	for pair, quoteAmount := range quoteToMove {
+		_, err := bot.PerformTradeAction(pair, quoteAmount, sdkAddress, context)
+		if err != nil {
+			log.Fatalf("Cannot PerformTradeAction(): %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec,
+	trader sdk.AccAddress, ctx context.Context) (*sdk.TxResponse, error) {
 	_, posExists := bot.State.Positions[pair]
 
 	currPosition := CurrPosStats{
@@ -170,16 +183,17 @@ func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec) error {
 	action := EvaluateTradeAction(quoteAmount, bot.State.Amms[pair].Markets, posExists, currPosition)
 	switch action {
 	case OpenOrder:
-		return bot.OpenPosition(quoteAmount.RoundInt(), sdk.NewDec(1))
+		return bot.OpenPosition(trader, quoteAmount.RoundInt(), sdk.NewDec(1), pair, ctx)
 	case CloseOrder:
-		return bot.ClosePosition(pair)
+		return bot.ClosePosition(trader, pair, ctx)
 	case CloseAndOpenOrder:
-		return bot.CloseAndOpenPosition(quoteAmount.RoundInt(), pair)
+		return bot.CloseAndOpenPosition(trader, quoteAmount.RoundInt(), pair, ctx)
 	case DontTrade:
-		return nil
+		return nil, nil
 	default:
-		return fmt.Errorf("Invalid action type: %v", action)
+		return nil, fmt.Errorf("Invalid action type: %v", action)
 	}
+
 }
 
 func (bot *Bot) PopulateCurrPosStats(pair string) CurrPosStats {
@@ -229,7 +243,7 @@ func (bot *Bot) PopulateGosdk(grpcUrl string, chainId string) *Bot {
 		log.Fatal(err)
 	}
 
-	gosdk, err := gonibi.NewNibiruClient(chainId, grpcClientConnection)
+	gosdk, err := gonibi.NewNibiruClient(chainId, grpcClientConnection, gonibi.DefaultNetworkInfo.TmRpcEndpoint)
 
 	if err != nil {
 		log.Fatal(err)
@@ -243,55 +257,172 @@ func (bot *Bot) PopulateGosdkFromNetinfo(netinfo gonibi.NetworkInfo) *Bot {
 	return bot.PopulateGosdk(netinfo.GrpcEndpoint, netinfo.ChainID)
 }
 
-func NewBot() *Bot {
+type BotArgs struct {
+	ChainId     string
+	GrpcConn    *grpc.ClientConn
+	RpcEndpt    string
+	Mnemonic    string
+	UseMnemonic bool
+	KeyName     string
+}
+
+const KEY_NAME = "bot"
+
+func NewBot(args BotArgs) (*Bot, error) {
+
+	gosdk, err := gonibi.NewNibiruClient(args.ChainId, args.GrpcConn,
+		args.RpcEndpt)
+	if err != nil {
+		return nil, err
+	}
+
+	var keyName string = KEY_NAME
+
+	dontUseMnemonic := args.Mnemonic != "" || args.UseMnemonic == false
+
+	if !dontUseMnemonic {
+		_, privKey, err := gonibi.CreateSigner(args.Mnemonic, gosdk.Keyring,
+			keyName)
+
+		if err != nil {
+
+			return nil, err
+		}
+
+		err = gonibi.AddSignerToKeyring(gosdk.Keyring, privKey, keyName)
+		if err != nil {
+			return nil, err
+
+		}
+	} else {
+		if args.KeyName == "" {
+			return nil, fmt.Errorf("No Key Name passed in")
+		}
+		keyName = args.KeyName
+	}
+
 	return &Bot{
 		State: BotState{
 			Positions: make(map[string]PositionFields),
 			Amms:      make(map[string]AmmFields),
-			Prices:    make(map[string]Prices)},
-		Gosdk: &gonibi.NibiruClient{},
+			Prices:    make(map[string]Prices),
+			Funds:     make(map[string]sdk.Coins),
+		},
+		Gosdk:     &gosdk,
+		TmrpcAddr: args.RpcEndpt,
+		DB:        CreateAndConnectDB(),
+		KeyName:   keyName,
+	}, nil
+}
+
+func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove math.Int,
+	leverage sdk.Dec, pair string, ctx context.Context) (*sdk.TxResponse, error) {
+
+	var side int32 = 0
+	if quoteToMove.GT(math.NewInt(0)) {
+		side = 1
+	} else {
+		side = 2
 	}
+
+	resp, err := bot.Gosdk.BroadcastMsgsGrpc(trader, &perpTypes.MsgMarketOrder{
+		Sender:               trader.String(),
+		Pair:                 asset.Pair(pair),
+		Side:                 perpTypes.Direction(side),
+		QuoteAssetAmount:     quoteToMove.Abs(),
+		Leverage:             leverage,
+		BaseAssetAmountLimit: sdk.NewInt(0),
+	})
+
+	fmt.Println("RESP: ", resp)
+
+	if err != nil {
+		log.Fatal("Cannot OpenPosition: ", err)
+	}
+	bot.FetchAndPopPositionsDB(trader, ctx)
+
+	return resp, err
+
 }
 
-func (bot *Bot) OpenPosition(quoteToMove math.Int, leverage sdk.Dec) error {
+func (bot *Bot) CloseAndOpenPosition(trader sdk.AccAddress,
+	quoteToMove math.Int, pair string, ctx context.Context) (*sdk.TxResponse, error) {
 
-	// var txResp sdk.TxResponse
-	// txResp.Logs
-	// var willBeLong bool
-	// if quoteToMove > 0 {
-	// 	willBeLong = true
-	// } else {
-	// 	willBeLongLong = false
-	// }
+	_, openErr := bot.ClosePosition(trader, pair, ctx)
 
-	// bot.Gosdk.Tx.BroadcastMsgs()
+	if openErr != nil {
+		return nil, openErr
+	}
 
+	resp, closeErr := bot.OpenPosition(trader, quoteToMove, sdk.NewDec(1), pair, ctx)
+
+	if closeErr != nil {
+		return resp, closeErr
+	}
+
+	return resp, nil
+}
+
+func (bot *Bot) ClosePosition(trader sdk.AccAddress, pair string, ctx context.Context) (*sdk.TxResponse, error) {
+
+	resp, err := bot.Gosdk.BroadcastMsgs(trader, &perpTypes.MsgClosePosition{
+		Sender: trader.String(),
+		Pair:   asset.Pair(pair),
+	})
+
+	bot.MakeZeroPosition(trader, pair, ctx)
+
+	bot.FetchAndPopPositionsDB(trader, ctx)
+
+	return resp, err
+}
+
+func (bot *Bot) FetchAndPopPositionsDB(trader sdk.AccAddress, ctx context.Context) error {
+
+	// Querying positions and storing in bot.State and then in DB
+	err := bot.FetchPositions(trader.String(), ctx)
+	if err != nil {
+		return err
+	}
+
+	height, err := bot.GetBlockHeight(ctx, bot.TmrpcAddr)
+	if err != nil {
+		return err
+	} else {
+		bot.DB.PopulatePositionTable(bot.State.Positions, height)
+	}
 	return nil
 }
 
-func (bot *Bot) CloseAndOpenPosition(quoteToMove sdk.Int, pair string) error {
-	return nil
+func (bot *Bot) GetKeyringRecord() (*keyring.Record, error) {
+
+	keyRecords, err := bot.Gosdk.Keyring.List()
+	var keyRingRecord *keyring.Record
+
+	for _, keyRecord := range keyRecords {
+		if keyRecord.Name == bot.KeyName {
+			keyRingRecord = keyRecord
+		}
+	}
+	if keyRingRecord == nil {
+		return nil, fmt.Errorf("Key name %s not found in keyring", bot.KeyName)
+	}
+	return keyRingRecord, err
 }
 
-func (bot *Bot) ClosePosition(pair string) error {
+func (bot *Bot) GetAddress() (sdk.AccAddress, error) {
+	record, err := bot.GetKeyringRecord()
 
-	return nil
-}
+	if err != nil {
+		return nil, err
+	}
 
-func (bot *Bot) QueryAddress(nodeDirName string) (sdk.AccAddress, error) {
-	mnemonic := os.Getenv("VALIDATOR_MNEMONIC")
-
-	signAlgo, _ := bot.Gosdk.Keyring.SupportedAlgorithms()
-	addr, _, err := sdktestutil.GenerateSaveCoinKey(
-		bot.Gosdk.Keyring, nodeDirName, mnemonic, true, signAlgo[0],
-	)
-
-	return addr, err
+	return record.GetAddress()
 }
 
 // token balance query
 func (bot *Bot) FetchBalances(ctx context.Context) error {
-	moduleAccounts, err := bot.Gosdk.Query.Perp.ModuleAccounts(ctx, &perpTypes.QueryModuleAccountsRequest{})
+	moduleAccounts, err := bot.Gosdk.Querier.Perp.ModuleAccounts(ctx, &perpTypes.QueryModuleAccountsRequest{})
 
 	if err != nil {
 		return err
@@ -302,17 +433,9 @@ func (bot *Bot) FetchBalances(ctx context.Context) error {
 	return nil
 }
 
-func (bot *Bot) PopulateBalances(moduleAccounts *perpTypes.QueryModuleAccountsResponse) {
-	for _, perpAccount := range moduleAccounts.GetAccounts() {
-		for _, coin := range perpAccount.Balance {
-			bot.State.Funds[coin.Denom] = coin.Amount
-		}
-	}
-}
-
 func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 
-	positions, err := bot.Gosdk.Query.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
+	positions, err := bot.Gosdk.Querier.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
 		Trader: trader,
 	})
 
@@ -321,6 +444,26 @@ func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 	}
 
 	bot.PopulatePositions(positions)
+
+	return nil
+}
+
+func (bot *Bot) FetchNewPrices(ctx context.Context) error {
+
+	_, err := bot.Gosdk.Querier.Oracle.ExchangeRates(ctx, &oracleTypes.QueryExchangeRatesRequest{})
+	if err != nil {
+		return err
+	}
+
+	queryMarkets, err := bot.Gosdk.Querier.Perp.QueryMarkets(ctx, &perpTypes.QueryMarketsRequest{})
+	if err != nil {
+		return err
+	}
+
+	fakeRates := MockQueryRates()
+
+	bot.PopulateAmms(queryMarkets)
+	bot.PopulatePrices(&fakeRates, queryMarkets)
 
 	return nil
 }
@@ -336,22 +479,6 @@ func (bot *Bot) PopulatePositions(positions *perpTypes.QueryPositionsResponse) {
 
 }
 
-func (bot *Bot) FetchNewPrices(ctx context.Context) error {
-
-	oracle, err := bot.Gosdk.Query.Oracle.ExchangeRates(ctx, &oracleTypes.QueryExchangeRatesRequest{})
-	if err != nil {
-		return err
-	}
-	queryMarkets, err := bot.Gosdk.Query.Perp.QueryMarkets(ctx, &perpTypes.QueryMarketsRequest{})
-	if err != nil {
-		return err
-	}
-	bot.PopulateAmms(queryMarkets)
-	bot.PopulatePrices(oracle, queryMarkets)
-
-	return nil
-}
-
 func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 	for index, value := range queryMarketsResp.AmmMarkets {
 		pair := value.Amm.Pair
@@ -363,10 +490,18 @@ func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 
 }
 
+func (bot *Bot) PopulateBalances(moduleAccounts *perpTypes.QueryModuleAccountsResponse) {
+
+	for _, perpAccount := range moduleAccounts.GetAccounts() {
+		bot.State.Funds[perpAccount.Address] = perpAccount.Balance
+	}
+}
+
 func (bot *Bot) PopulatePrices(oracle *oracleTypes.QueryExchangeRatesResponse,
 	queryMarkets *perpTypes.QueryMarketsResponse) {
 
 	queryRatesMap := oracle.ExchangeRates.ToMap()
+
 	for _, value := range queryMarkets.AmmMarkets {
 		pair := value.Amm.Pair
 		indexPrice, exists := queryRatesMap[pair]
@@ -379,17 +514,30 @@ func (bot *Bot) PopulatePrices(oracle *oracleTypes.QueryExchangeRatesResponse,
 
 }
 
+// To test making market orders if index & mark are too close
 func MockQueryRates() oracleTypes.QueryExchangeRatesResponse {
 
 	return oracleTypes.QueryExchangeRatesResponse{
 		ExchangeRates: []oracleTypes.ExchangeRateTuple{
 			{
 				Pair:         asset.NewPair("ubtc", "unusd"),
-				ExchangeRate: sdk.NewDec(30000),
+				ExchangeRate: sdk.NewDec(35000),
 			},
 			{
 				Pair:         asset.NewPair("ueth", "unusd"),
-				ExchangeRate: sdk.NewDec(30000),
+				ExchangeRate: sdk.NewDec(1500),
+			},
+			{
+				Pair:         asset.NewPair("uatom", "unusd"),
+				ExchangeRate: sdk.NewDec(100),
+			},
+			{
+				Pair:         asset.NewPair("unibi", "unusd"),
+				ExchangeRate: sdk.NewDec(500),
+			},
+			{
+				Pair:         asset.NewPair("uosmo", "unusd"),
+				ExchangeRate: sdk.NewDec(600),
 			},
 		},
 	}
@@ -402,20 +550,21 @@ func ShouldNotTrade(quoteToMovePrice sdk.Dec, quoteReserve sdk.Dec) bool {
 	return false
 }
 
-func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
+func (bot *Bot) QuoteNeededToMovePrice() (map[string]sdk.Dec, error) {
 
 	var quoteReserveMap = make(map[string]sdk.Dec)
 
 	for key, value := range bot.State.Amms {
 		quoteReserveMap[key] = value.Markets.QuoteReserve
+
 	}
-	// use for loop
+
 	var qp = make(map[string]sdk.Dec)
 
 	for key := range bot.State.Amms {
 		qpTemp, err := common.SqrtDec(bot.State.Prices[key].IndexPrice.Quo(bot.State.Prices[key].MarkPrice))
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 		qp[key] = qpTemp
 	}
@@ -426,12 +575,14 @@ func QuoteNeededToMovePrice(bot Bot) map[string]sdk.Dec {
 		quoteToMove[key] = ((value.Quo(qp[key])).Sub(value)).Mul(sdk.NewDec(-1))
 	}
 
-	return quoteToMove
+	return quoteToMove, nil
 
 }
 
-func (bot *Bot) GetBlockHeight(ctx context.Context) (int64, error) {
-	rpc, rpcErr := rpchttp.New(gonibi.DefaultNetworkInfo.TmRpcEndpoint,
+func (bot *Bot) GetBlockHeight(ctx context.Context, tmrpcEndpoint string) (int64, error) {
+	// rpc, rpcErr := rpchttp.New(gonibi.DefaultNetworkInfo.TmRpcEndpoint,
+	// 	"/websocket")
+	rpc, rpcErr := rpchttp.New(tmrpcEndpoint,
 		"/websocket")
 
 	if rpcErr != nil {
@@ -478,4 +629,17 @@ func IsPosAgainstMarket(posSize sdk.Dec, mark sdk.Dec, index sdk.Dec) bool {
 	marketLong := mark.GT(index)
 	posLong := posSize.IsPositive()
 	return marketLong != posLong
+}
+
+func (bot *Bot) MakeZeroPosition(trader sdk.AccAddress, pair string, ctx context.Context) {
+
+	bot.Gosdk.BroadcastMsgs(trader, &perpTypes.MsgMarketOrder{
+		Sender:               trader.String(),
+		Pair:                 asset.Pair(pair),
+		Side:                 2,
+		QuoteAssetAmount:     math.ZeroInt(),
+		Leverage:             math.LegacyZeroDec(),
+		BaseAssetAmountLimit: math.ZeroInt(),
+	})
+
 }
