@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 
-	"cosmossdk.io/math"
 	"github.com/NibiruChain/nibiru/app"
 	"github.com/NibiruChain/nibiru/x/common"
 	"github.com/NibiruChain/nibiru/x/common/asset"
@@ -23,10 +22,10 @@ import (
 var _ = app.BankModule.Name
 
 type BotState struct {
-	Positions map[string]PositionFields
-	Amms      map[string]AmmFields
-	Prices    map[string]Prices
-	Funds     map[string]sdk.Coins
+	Positions         map[string]PositionFields
+	Amms              map[string]AmmFields
+	Prices            map[string]Prices
+	PortfolioBalances Portfolio
 }
 
 type PositionFields struct {
@@ -70,13 +69,6 @@ const (
 	CloseAndOpenOrder
 	DontTrade
 )
-
-func main() {
-	var LOGGING_FILE = "test-log.txt"
-	SetupLoggingFile(LOGGING_FILE)
-	fmt.Print(LOGGING_FILE)
-
-}
 
 func LoadBot() (*Bot, error) {
 	godotenv.Load()
@@ -129,6 +121,7 @@ func Run(bot *Bot) error {
 	} else {
 		bot.DB.PopulateAmmsTable(bot.State.Amms, blockHeight)
 		bot.DB.PopulatePricesTable(bot.State.Prices, blockHeight)
+		bot.State.PortfolioBalances.BlockNumber = blockHeight
 	}
 
 	//Querying trader address to find positions by
@@ -138,13 +131,17 @@ func Run(bot *Bot) error {
 		return fmt.Errorf("Cannot QueryAddress(): %s", err)
 	}
 
-	err = bot.FetchBalances(context)
-
+	balancesResp, err := bot.State.PortfolioBalances.Balances.QueryWalletCoins(
+		context, sdkAddress, bot.Gosdk.GrpcClient,
+	)
 	if err != nil {
-		return fmt.Errorf("Cannot FetchBalances: %s", err)
-	} else {
-		bot.DB.PopulateBalancesTable(bot.State.Funds, blockHeight)
+		return fmt.Errorf("Cannot QueryWalletCoins(): %s", err)
 	}
+
+	bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)
+
+	bot.DB.PopulateBalancesTable(bot.State.PortfolioBalances.Balances.WalletCoins,
+		sdkAddress.String(), blockHeight)
 
 	quoteToMove, err := bot.QuoteNeededToMovePrice()
 
@@ -152,18 +149,43 @@ func Run(bot *Bot) error {
 		return fmt.Errorf("Cannot FindQuoteToMove: %s", err)
 	}
 
-	for pair, quoteAmount := range quoteToMove {
-		_, err := bot.PerformTradeAction(pair, quoteAmount, sdkAddress, context)
+	for pair, quote := range quoteToMove {
+		quoteAmount := quote.RoundInt()
+		_, action, err := bot.PerformTradeAction(pair, quoteAmount, sdkAddress, context)
 		if err != nil {
 			log.Fatalf("Cannot PerformTradeAction(): %v", err)
 		}
+
+		bot.UpdateTradeBalance(action, pair, quoteAmount)
 	}
+
+	balancesResp, err = bot.State.PortfolioBalances.Balances.QueryWalletCoins(
+		context, sdkAddress, bot.Gosdk.GrpcClient,
+	)
+	if err != nil {
+		return fmt.Errorf("Cannot QueryWalletCoins(): %s", err)
+	}
+
+	bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)
 
 	return nil
 }
 
-func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec,
-	trader sdk.AccAddress, ctx context.Context) (*sdk.TxResponse, error) {
+func (bot *Bot) UpdateTradeBalance(action TradeAction, pair string, quoteAmount sdk.Int) {
+
+	switch action {
+	case OpenOrder:
+		bot.State.PortfolioBalances.Balances.AddTradedBalances(pair,
+			sdk.NewCoin(asset.Pair(pair).QuoteDenom(), quoteAmount.Abs()))
+	case CloseOrder:
+		bot.State.PortfolioBalances.Balances.RemoveTradedBalances(pair,
+			sdk.NewCoin(asset.Pair(pair).QuoteDenom(), quoteAmount.Abs()))
+	}
+
+}
+
+func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Int,
+	trader sdk.AccAddress, ctx context.Context) (*sdk.TxResponse, TradeAction, error) {
 	_, posExists := bot.State.Positions[pair]
 
 	currPosition := CurrPosStats{
@@ -183,15 +205,18 @@ func (bot *Bot) PerformTradeAction(pair string, quoteAmount sdk.Dec,
 	action := EvaluateTradeAction(quoteAmount, bot.State.Amms[pair].Markets, posExists, currPosition)
 	switch action {
 	case OpenOrder:
-		return bot.OpenPosition(trader, quoteAmount.RoundInt(), sdk.NewDec(1), pair, ctx)
+		txResp, err := bot.OpenPosition(trader, quoteAmount, sdk.NewDec(1), pair, ctx)
+		return txResp, action, err
 	case CloseOrder:
-		return bot.ClosePosition(trader, pair, ctx)
+		txResp, err := bot.ClosePosition(trader, pair, ctx)
+		return txResp, action, err
 	case CloseAndOpenOrder:
-		return bot.CloseAndOpenPosition(trader, quoteAmount.RoundInt(), pair, ctx)
+		txResp, err := bot.CloseAndOpenPosition(trader, quoteAmount, pair, ctx)
+		return txResp, action, err
 	case DontTrade:
-		return nil, nil
+		return nil, action, nil
 	default:
-		return nil, fmt.Errorf("Invalid action type: %v", action)
+		return nil, action, fmt.Errorf("Invalid action type: %v", action)
 	}
 
 }
@@ -219,8 +244,9 @@ func (bot *Bot) PopulateCurrPosStats(pair string) CurrPosStats {
 	return position
 }
 
-func EvaluateTradeAction(QuoteToMovePrice sdk.Dec, amm perpTypes.AMM, posExists bool, position CurrPosStats) TradeAction {
+func EvaluateTradeAction(QuoteToMove sdk.Int, amm perpTypes.AMM, posExists bool, position CurrPosStats) TradeAction {
 
+	QuoteToMovePrice := sdk.NewDecFromInt(QuoteToMove)
 	if ShouldNotTrade(QuoteToMovePrice, amm.QuoteReserve) &&
 		posExists && position.IsAgainstMarket &&
 		position.MarketDelta.GT(position.CurrIndexPrice.Quo(sdk.NewDec(10))) {
@@ -303,10 +329,10 @@ func NewBot(args BotArgs) (*Bot, error) {
 
 	return &Bot{
 		State: BotState{
-			Positions: make(map[string]PositionFields),
-			Amms:      make(map[string]AmmFields),
-			Prices:    make(map[string]Prices),
-			Funds:     make(map[string]sdk.Coins),
+			Positions:         make(map[string]PositionFields),
+			Amms:              make(map[string]AmmFields),
+			Prices:            make(map[string]Prices),
+			PortfolioBalances: InitializePortfolio(),
 		},
 		Gosdk:     &gosdk,
 		TmrpcAddr: args.RpcEndpt,
@@ -315,11 +341,11 @@ func NewBot(args BotArgs) (*Bot, error) {
 	}, nil
 }
 
-func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove math.Int,
+func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove sdk.Int,
 	leverage sdk.Dec, pair string, ctx context.Context) (*sdk.TxResponse, error) {
 
 	var side int32 = 0
-	if quoteToMove.GT(math.NewInt(0)) {
+	if quoteToMove.GT(sdk.NewInt(0)) {
 		side = 1
 	} else {
 		side = 2
@@ -334,10 +360,8 @@ func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove math.Int,
 		BaseAssetAmountLimit: sdk.NewInt(0),
 	})
 
-	fmt.Println("RESP: ", resp)
-
 	if err != nil {
-		log.Fatal("Cannot OpenPosition: ", err)
+		return nil, err
 	}
 	bot.FetchAndPopPositionsDB(trader, ctx)
 
@@ -346,7 +370,7 @@ func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove math.Int,
 }
 
 func (bot *Bot) CloseAndOpenPosition(trader sdk.AccAddress,
-	quoteToMove math.Int, pair string, ctx context.Context) (*sdk.TxResponse, error) {
+	quoteToMove sdk.Int, pair string, ctx context.Context) (*sdk.TxResponse, error) {
 
 	_, openErr := bot.ClosePosition(trader, pair, ctx)
 
@@ -420,27 +444,6 @@ func (bot *Bot) GetAddress() (sdk.AccAddress, error) {
 	return record.GetAddress()
 }
 
-// type Portofolio struct {
-// 	splits (proportion of each balance)
-// 	balances map[string]sdk.Int
-// 	howMuchInEachPair map[string]sdk.Int
-// }
-// if trade sizes are small enough, no need to think about allocation
-
-// token balance query
-func (bot *Bot) FetchBalances(ctx context.Context) error {
-	moduleAccounts, err := bot.Gosdk.Querier.Perp.ModuleAccounts(ctx, &perpTypes.QueryModuleAccountsRequest{})
-
-	// create a map
-	if err != nil {
-		return err
-	}
-
-	bot.PopulateBalances(moduleAccounts)
-
-	return nil
-}
-
 func (bot *Bot) FetchPositions(trader string, ctx context.Context) error {
 
 	positions, err := bot.Gosdk.Querier.Perp.QueryPositions(ctx, &perpTypes.QueryPositionsRequest{
@@ -496,13 +499,6 @@ func (bot *Bot) PopulateAmms(queryMarketsResp *perpTypes.QueryMarketsResponse) {
 		}
 	}
 
-}
-
-func (bot *Bot) PopulateBalances(moduleAccounts *perpTypes.QueryModuleAccountsResponse) {
-
-	for _, perpAccount := range moduleAccounts.GetAccounts() {
-		bot.State.Funds[perpAccount.Address] = perpAccount.Balance
-	}
 }
 
 func (bot *Bot) PopulatePrices(oracle *oracleTypes.QueryExchangeRatesResponse,
@@ -645,9 +641,9 @@ func (bot *Bot) MakeZeroPosition(trader sdk.AccAddress, pair string, ctx context
 		Sender:               trader.String(),
 		Pair:                 asset.Pair(pair),
 		Side:                 2,
-		QuoteAssetAmount:     math.ZeroInt(),
-		Leverage:             math.LegacyZeroDec(),
-		BaseAssetAmountLimit: math.ZeroInt(),
+		QuoteAssetAmount:     sdk.ZeroInt(),
+		Leverage:             sdk.ZeroDec(),
+		BaseAssetAmountLimit: sdk.ZeroInt(),
 	})
 
 }

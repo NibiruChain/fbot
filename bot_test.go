@@ -3,7 +3,6 @@ package fbot_test
 import (
 	"context"
 	"fbot"
-	"fmt"
 	"testing"
 
 	"cosmossdk.io/math"
@@ -35,6 +34,11 @@ type BotSuite struct {
 
 func TestBot(t *testing.T) {
 	suite.Run(t, new(BotSuite))
+}
+
+func (s *BotSuite) Run(t *testing.T) {
+	err := fbot.Run(s.bot)
+	s.NoError(err)
 }
 
 // Example of iterative test cases
@@ -133,14 +137,14 @@ func (chain *BlockChain) ConnectGrpc(t *testing.T) {
 func (s *BotSuite) TestBotSuite() {
 	s.chain = SetupChain(s.T())
 	s.SetupGoSdk()
-	//s.T().Run("RunTest", s.Run)
+
 	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
 	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
-	s.T().Run("RunTestFetchBalances", s.RunTestFetchBalances)
-	s.bot.DB = fbot.CreateAndConnectDB()
+	s.T().Run("RunTestPopWalletCoins", s.RunTestPopWalletCoins)
 	s.T().Run("RunTestGetBlockHeight", s.RunTestGetBlockHeight)
 	s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
 	s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
+
 	s.bot.DB.ClearDB()
 	s.chain.network.Cleanup()
 }
@@ -152,6 +156,8 @@ func (s *BotSuite) SetupGoSdk() {
 		s.chain.val.Address)
 
 	s.NoError(err)
+
+	s.address = s.chain.val.Address
 
 	bot, err := fbot.NewBot(
 		fbot.BotArgs{
@@ -170,11 +176,6 @@ func (s *BotSuite) SetupGoSdk() {
 
 	s.Equal(s.bot.Gosdk.GrpcClient, s.chain.grpcConn)
 
-}
-
-func (s *BotSuite) Run(t *testing.T) {
-	err := fbot.Run(s.bot)
-	s.NoError(err)
 }
 
 func (s *BotSuite) RunTestPopulateAmms(t *testing.T) {
@@ -199,15 +200,30 @@ func (s *BotSuite) RunTestFetchPrices(t *testing.T) {
 
 }
 
-func (s *BotSuite) RunTestFetchBalances(t *testing.T) {
-	fundsErr := s.bot.FetchBalances(s.ctx)
-	s.NoError(fundsErr)
+func (s *BotSuite) RunTestUpdateTradeBalance(t *testing.T) {
+
+	s.bot.UpdateTradeBalance(fbot.OpenOrder, "ubtc:unusd", sdk.NewInt(100))
+
+	s.Equal(t, s.bot.State.PortfolioBalances.Balances.TradedBalances["ubtc:unusd"], 100)
+
+	s.bot.UpdateTradeBalance(fbot.CloseOrder, "ubtc:unusd", sdk.NewInt(100))
+
+	s.Equal(t, s.bot.State.PortfolioBalances.Balances.TradedBalances["ubtc:unusd"], 0)
+
+}
+
+func (s *BotSuite) RunTestPopWalletCoins(t *testing.T) {
+	balancesResp, err := s.bot.State.PortfolioBalances.Balances.QueryWalletCoins(s.ctx, s.address, s.bot.Gosdk.GrpcClient)
+
+	s.NoError(err)
+
+	s.bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)
 }
 
 func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		quoteAmount sdk.Dec
+		quoteAmount sdk.Int
 		amm         perpTypes.AMM
 		posExists   bool
 		position    fbot.CurrPosStats
@@ -215,7 +231,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 	}{
 		{
 			name:        "Open Order",
-			quoteAmount: sdk.NewDec(3500), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(3500), amm: perpTypes.AMM{
 				Pair:            "ubtc:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -236,7 +252,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "Close Order",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ueth:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -257,7 +273,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "CloseAndOpenOrder",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ueth:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -278,7 +294,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "DontTrade",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ubtc:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -365,9 +381,6 @@ func (s *BotSuite) RunTestGetBlockHeight(t *testing.T) {
 }
 
 func (s *BotSuite) RunTestOpenPosition(t *testing.T) {
-
-	s.address = s.chain.val.Address
-
 	addr, err := s.bot.GetAddress()
 	s.NoError(err)
 
@@ -402,7 +415,5 @@ func (s *BotSuite) FetchPositions(t *testing.T) {
 	positions, err := s.bot.DB.QueryPositionTable()
 	s.NoError(err)
 	s.NotNil(positions)
-
-	fmt.Println("POSITIONS: ", positions)
 
 }

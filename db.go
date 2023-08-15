@@ -31,23 +31,11 @@ func (botdb *BotDB) ConnectToDB() {
 }
 
 func (botdb *BotDB) ClearDB() {
-	// botdb.DB.Delete(&TablePosition{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TablePrices{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TableAmms{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TableBalances{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TablePosition{})
 }
-
-// func (botdb *BotDB) JoinTables() {
-// 	var joinedData []JoinedData
-
-// 	botdb.DB.Table("table_prices_amms").
-// 		Select("table_prices_amms.*, table_position.*, table_balances.*").
-// 		Joins("JOIN table_position ON table_prices_amms.block_height = table_position.block_height").
-// 		Joins("JOIN table_balances ON table_prices_amms.block_height = table_balances.block_height").
-// 		Scan(&joinedData)
-
-// }
 
 // Populating Tables
 
@@ -85,16 +73,14 @@ func (botdb *BotDB) PopulatePositionTable(positions map[string]PositionFields, b
 	}
 }
 
-func (botdb *BotDB) PopulateBalancesTable(balances map[string]sdk.Coins, blockHeight int64) {
-	for trader, coins := range balances {
-		for _, coin := range coins {
-			botdb.DB.Create(&TableBalances{
-				Trader:      trader,
-				Denom:       coin.Denom,
-				Amount:      coin.Amount.String(),
-				BlockHeight: blockHeight,
-			})
-		}
+func (botdb *BotDB) PopulateBalancesTable(wallet sdk.Coins, trader string, blockHeight int64) {
+	for _, coin := range wallet {
+		botdb.DB.Create(&TableBalances{
+			Trader:      trader,
+			Denom:       coin.Denom,
+			Amount:      coin.Amount.String(),
+			BlockHeight: blockHeight,
+		})
 	}
 }
 
