@@ -3,6 +3,8 @@ package fbot_test
 import (
 	"context"
 	"fbot"
+	"fmt"
+	"os"
 	"testing"
 
 	"cosmossdk.io/math"
@@ -11,6 +13,7 @@ import (
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
@@ -30,6 +33,7 @@ type BotSuite struct {
 	ctx     context.Context
 	address sdk.AccAddress
 	chain   *BlockChain
+	config  *fbot.BotConfig
 }
 
 func TestBot(t *testing.T) {
@@ -39,6 +43,27 @@ func TestBot(t *testing.T) {
 func (s *BotSuite) Run(t *testing.T) {
 	err := fbot.Run(s.bot)
 	s.NoError(err)
+}
+
+func (s *BotSuite) RunTestInitConfig(t *testing.T) {
+	config := fbot.Load()
+	s.NotNil(config)
+	err := config.CheckConfig()
+	s.NoError(err)
+	s.config = config
+	fmt.Print("OLD CONFIG: ", s.config)
+
+	godotenv.Load(".env")
+	envFile, _ := os.OpenFile(".env", os.O_APPEND|os.O_WRONLY, 0600)
+	_, _ = envFile.WriteString(fmt.Sprintf("CHAIN_ID = 'nibiru-localnet-0'"))
+}
+
+func (s *BotSuite) RunTestSaveConfig(t *testing.T) {
+	conf, err := s.config.Save()
+
+	fmt.Print("NEW CONFIG: ", conf)
+	s.config = conf
+	s.NoError((err))
 }
 
 // Example of iterative test cases
@@ -135,16 +160,17 @@ func (chain *BlockChain) ConnectGrpc(t *testing.T) {
 }
 
 func (s *BotSuite) TestBotSuite() {
+	s.T().Run("RunTestInitConfig", s.RunTestInitConfig)
+	s.T().Run("RunTestSaveConfig", s.RunTestSaveConfig)
 	s.chain = SetupChain(s.T())
 	s.SetupGoSdk()
-
+	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
 	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
 	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
 	s.T().Run("RunTestPopWalletCoins", s.RunTestPopWalletCoins)
 	s.T().Run("RunTestGetBlockHeight", s.RunTestGetBlockHeight)
 	s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
 	s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
-
 	s.bot.DB.ClearDB()
 	s.chain.network.Cleanup()
 }
@@ -157,12 +183,10 @@ func (s *BotSuite) SetupGoSdk() {
 
 	s.NoError(err)
 
-	s.address = s.chain.val.Address
-
 	bot, err := fbot.NewBot(
 		fbot.BotArgs{
 			ChainId:     s.chain.cfg.ChainID,
-			GrpcConn:    s.chain.grpcConn,
+			GrpcEndpt:   s.chain.cfg.GRPCAddress,
 			RpcEndpt:    s.chain.val.RPCAddress,
 			Mnemonic:    "",
 			UseMnemonic: false,
@@ -174,7 +198,7 @@ func (s *BotSuite) SetupGoSdk() {
 	s.bot = bot
 	s.bot.Gosdk.Keyring = s.chain.val.ClientCtx.Keyring
 
-	s.Equal(s.bot.Gosdk.GrpcClient, s.chain.grpcConn)
+	s.address = s.chain.val.Address
 
 }
 
@@ -214,7 +238,7 @@ func (s *BotSuite) RunTestUpdateTradeBalance(t *testing.T) {
 
 func (s *BotSuite) RunTestPopWalletCoins(t *testing.T) {
 	balancesResp, err := s.bot.State.PortfolioBalances.Balances.QueryWalletCoins(s.ctx, s.address, s.bot.Gosdk.GrpcClient)
-
+	s.NotNil(balancesResp)
 	s.NoError(err)
 
 	s.bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)

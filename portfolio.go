@@ -29,7 +29,7 @@ type PortfolioBalances struct {
 }
 
 // TotalValue: Coin value of both the wallet and trading positions.
-func (bals PortfolioBalances) TotalValue() sdk.Coins {
+func (bals *PortfolioBalances) TotalValue() sdk.Coins {
 	coins := sdk.NewCoins(bals.WalletCoins...)
 	for _, balance := range bals.TradedBalances {
 		coins.Add(balance)
@@ -37,8 +37,8 @@ func (bals PortfolioBalances) TotalValue() sdk.Coins {
 	return coins
 }
 
-func InitializePortfolio() Portfolio {
-	bals := Portfolio{
+func InitializePortfolio() *Portfolio {
+	bals := &Portfolio{
 		Balances: PortfolioBalances{
 			TradedBalances: make(map[string]sdk.Coin),
 			WalletCoins:    []sdk.Coin{},
@@ -48,9 +48,10 @@ func InitializePortfolio() Portfolio {
 	return bals
 }
 
-func (bals PortfolioBalances) QueryWalletCoins(ctx context.Context,
+func (bals *PortfolioBalances) QueryWalletCoins(ctx context.Context,
 	trader sdk.AccAddress, grpcCon *grpc.ClientConn) (*bankTypes.QueryAllBalancesResponse, error) {
 	balQueryClient := bankTypes.NewQueryClient(grpcCon)
+
 	return balQueryClient.AllBalances(
 		ctx, &bankTypes.QueryAllBalancesRequest{
 			Address: trader.String(),
@@ -58,14 +59,14 @@ func (bals PortfolioBalances) QueryWalletCoins(ctx context.Context,
 	)
 }
 
-func (bals PortfolioBalances) PopWalletCoins(balanceResp *bankTypes.QueryAllBalancesResponse) {
+func (bals *PortfolioBalances) PopWalletCoins(balanceResp *bankTypes.QueryAllBalancesResponse) {
 
 	for _, coin := range balanceResp.Balances {
 		bals.WalletCoins = bals.WalletCoins.Add(coin)
 	}
 }
 
-func (bals PortfolioBalances) AddTradedBalances(market string, amount sdk.Coin) {
+func (bals *PortfolioBalances) AddTradedBalances(market string, amount sdk.Coin) {
 	if bals.TradedBalances[market].Denom == amount.Denom {
 		bals.TradedBalances[market] = bals.TradedBalances[market].Add(amount)
 	} else {
@@ -73,7 +74,7 @@ func (bals PortfolioBalances) AddTradedBalances(market string, amount sdk.Coin) 
 	}
 }
 
-func (bals PortfolioBalances) RemoveTradedBalances(market string, amount sdk.Coin) {
+func (bals *PortfolioBalances) RemoveTradedBalances(market string, amount sdk.Coin) {
 	if bals.TradedBalances[market].Denom == amount.Denom {
 		bals.TradedBalances[market] = bals.TradedBalances[market].Sub(amount)
 	}

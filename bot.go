@@ -16,7 +16,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/joho/godotenv"
-	"google.golang.org/grpc"
 )
 
 var _ = app.BankModule.Name
@@ -87,16 +86,9 @@ func LoadBot() (*Bot, error) {
 		TMRPC_ENDPOINT = gonibi.DefaultNetworkInfo.TmRpcEndpoint
 	}
 
-	grpcClientConnection, err := gonibi.GetGRPCConnection(
-		GRPC_ENDPOINT, true, 5)
-
-	if err != nil {
-		return nil, err
-	}
-
 	return NewBot(BotArgs{
 		ChainId:     CHAIN_ID,
-		GrpcConn:    grpcClientConnection,
+		GrpcEndpt:   GRPC_ENDPOINT,
 		RpcEndpt:    TMRPC_ENDPOINT,
 		Mnemonic:    os.Getenv("VALIDATOR_MNEMONIC"),
 		UseMnemonic: true,
@@ -109,6 +101,9 @@ func Run(bot *Bot) error {
 
 	context := context.Background()
 
+	if err := bot.SyncState(); err != nil {
+		return err
+	}
 	// Querying info for Prices/Amms structs
 	err := bot.FetchNewPrices(context)
 	if err != nil {
@@ -169,6 +164,13 @@ func Run(bot *Bot) error {
 	bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)
 
 	return nil
+}
+
+func (bot *Bot) SyncState() (err error) {
+
+	// TODO: Query & Update Balances, Query & Update Wallets
+
+	return err
 }
 
 func (bot *Bot) UpdateTradeBalance(action TradeAction, pair string, quoteAmount sdk.Int) {
@@ -285,7 +287,7 @@ func (bot *Bot) PopulateGosdkFromNetinfo(netinfo gonibi.NetworkInfo) *Bot {
 
 type BotArgs struct {
 	ChainId     string
-	GrpcConn    *grpc.ClientConn
+	GrpcEndpt   string
 	RpcEndpt    string
 	Mnemonic    string
 	UseMnemonic bool
@@ -296,7 +298,13 @@ const KEY_NAME = "bot"
 
 func NewBot(args BotArgs) (*Bot, error) {
 
-	gosdk, err := gonibi.NewNibiruClient(args.ChainId, args.GrpcConn,
+	grpcConn, err := gonibi.GetGRPCConnection(args.GrpcEndpt, true, 5)
+
+	if err != nil {
+		return nil, err
+	}
+
+	gosdk, err := gonibi.NewNibiruClient(args.ChainId, grpcConn,
 		args.RpcEndpt)
 	if err != nil {
 		return nil, err
@@ -332,7 +340,7 @@ func NewBot(args BotArgs) (*Bot, error) {
 			Positions:         make(map[string]PositionFields),
 			Amms:              make(map[string]AmmFields),
 			Prices:            make(map[string]Prices),
-			PortfolioBalances: InitializePortfolio(),
+			PortfolioBalances: *InitializePortfolio(),
 		},
 		Gosdk:     &gosdk,
 		TmrpcAddr: args.RpcEndpt,
