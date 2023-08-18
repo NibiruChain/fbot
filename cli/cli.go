@@ -40,8 +40,7 @@ func CliMain() {
 			// go run main.go start
 			Name: "start",
 			Action: func(c *cli.Context) error {
-				runner.Server.StartCh <- true
-				runner.HandleChannels()
+
 				return nil
 			},
 		},
@@ -49,8 +48,7 @@ func CliMain() {
 			// go run main.go pause
 			Name: "pause",
 			Action: func(c *cli.Context) error {
-				runner.Server.PauseCh <- true
-				runner.HandleChannels()
+
 				return nil
 			},
 		},
@@ -58,8 +56,7 @@ func CliMain() {
 			// go run main.go end
 			Name: "end",
 			Action: func(c *cli.Context) error {
-				runner.Server.StopCh <- true
-				runner.HandleChannels()
+
 				return nil
 			},
 		},

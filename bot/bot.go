@@ -315,6 +315,11 @@ func NewBot(args BotArgs) (*Bot, error) {
 	dontUseMnemonic := args.Mnemonic != "" || args.UseMnemonic == false
 
 	if !dontUseMnemonic {
+
+		if err != nil {
+			return nil, err
+		}
+
 		_, privKey, err := gonibi.CreateSigner(args.Mnemonic, gosdk.Keyring,
 			keyName)
 
@@ -323,11 +328,25 @@ func NewBot(args BotArgs) (*Bot, error) {
 			return nil, err
 		}
 
-		err = gonibi.AddSignerToKeyring(gosdk.Keyring, privKey, keyName)
-		if err != nil {
-			return nil, err
+		records, err := gosdk.Keyring.List()
 
+		var keyExists = false
+		for _, record := range records {
+			if record.Name == keyName {
+				keyExists = true
+			}
 		}
+
+		if !keyExists {
+
+			err = gonibi.AddSignerToKeyring(gosdk.Keyring, privKey, keyName)
+
+			if err != nil {
+				return nil, err
+
+			}
+		}
+
 	} else {
 		if args.KeyName == "" {
 			return nil, fmt.Errorf("No Key Name passed in")

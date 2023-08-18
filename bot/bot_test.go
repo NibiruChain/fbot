@@ -111,10 +111,10 @@ func (s *BotSuite) RunTestInitConfig(t *testing.T) {
 			fbot.DeleteConfigFile()
 
 			envFile, _ := os.Create(fbot.EnvFilePath())
-			envFile.WriteString("MNEMONIC: " + tc.oldConfig.MNEMONIC + "\n")
-			envFile.WriteString("CHAIN_ID: " + tc.oldConfig.CHAIN_ID + "\n")
-			envFile.WriteString("GRPC_ENDPOINT: " + tc.oldConfig.GRPC_ENDPOINT + "\n")
-			envFile.WriteString("TMRPC_ENDPOINT: " + tc.oldConfig.TMRPC_ENDPOINT + "\n")
+			envFile.WriteString("MNEMONIC=" + "\"" + tc.oldConfig.MNEMONIC + "\"" + "\n")
+			envFile.WriteString("CHAIN_ID=" + "\"" + tc.oldConfig.CHAIN_ID + "\"" + "\n")
+			envFile.WriteString("GRPC_ENDPOINT=" + "\"" + tc.oldConfig.GRPC_ENDPOINT + "\"" + "\n")
+			envFile.WriteString("TMRPC_ENDPOINT=" + "\"" + tc.oldConfig.TMRPC_ENDPOINT + "\"" + "\n")
 
 			config, err := fbot.Load()
 			s.NoError(err)
@@ -130,10 +130,10 @@ func (s *BotSuite) RunTestInitConfig(t *testing.T) {
 			fbot.DeleteConfigFile()
 
 			newEnvFile, _ := os.Create(fbot.EnvFilePath())
-			newEnvFile.WriteString("MNEMONIC: " + tc.newConfig.MNEMONIC + "\n")
-			newEnvFile.WriteString("CHAIN_ID: " + tc.newConfig.CHAIN_ID + "\n")
-			newEnvFile.WriteString("GRPC_ENDPOINT: " + tc.newConfig.GRPC_ENDPOINT + "\n")
-			newEnvFile.WriteString("TMRPC_ENDPOINT: " + tc.newConfig.TMRPC_ENDPOINT + "\n")
+			newEnvFile.WriteString("MNEMONIC=" + "\"" + tc.newConfig.MNEMONIC + "\"" + "\n")
+			newEnvFile.WriteString("CHAIN_ID=" + "\"" + tc.newConfig.CHAIN_ID + "\"" + "\n")
+			envFile.WriteString("GRPC_ENDPOINT=" + "\"" + tc.oldConfig.GRPC_ENDPOINT + "\"" + "\n")
+			newEnvFile.WriteString("TMRPC_ENDPOINT=" + "\"" + tc.newConfig.TMRPC_ENDPOINT + "\"" + "\n")
 
 			newConfig, err := config.Save()
 
@@ -284,8 +284,8 @@ func (s *BotSuite) TestBotSuite() {
 	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
 	s.T().Run("RunTestPopWalletCoins", s.RunTestPopWalletCoins)
 	s.T().Run("RunTestGetBlockHeight", s.RunTestGetBlockHeight)
-	// s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
-	// s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
+	s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
+	s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
 }
 
 func (s *BotSuite) TearDownAllSuite() {
@@ -524,6 +524,7 @@ func (s *BotSuite) RunTestGetBlockHeight(t *testing.T) {
 }
 
 func (s *BotSuite) RunTestOpenPosition(t *testing.T) {
+
 	addr, err := s.bot.GetAddress()
 	s.NoError(err)
 
@@ -534,6 +535,7 @@ func (s *BotSuite) RunTestOpenPosition(t *testing.T) {
 	s.NoError(err)
 
 	s.NoError(s.chain.network.WaitForNextBlock())
+
 	hashBz, err := hex.DecodeString(resp.TxHash)
 	txHashQueryResp, err := s.bot.Gosdk.CometRPC.Tx(s.ctx, hashBz, false)
 	s.NoErrorf(err, "Query Response: %s", txHashQueryResp.Hash)
