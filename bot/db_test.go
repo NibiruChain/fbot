@@ -1,7 +1,7 @@
 package fbot_test
 
 import (
-	"fbot"
+	fbot "fbot/bot"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -25,17 +25,18 @@ func (db *DBSuite) TestDBSuite() {
 	db.T().Run("RunTestQueryAllPrices", db.RunTestQueryAllPrices)
 	db.T().Run("RunTestNewDBRecordsFromString", db.RunTestNewDBRecordsFromString)
 	db.T().Run("RunTestRecordsString", db.RunTestRecordsString)
-	db.TearDownSuite()
+
 }
 
 func (db *DBSuite) SetupDB() {
 	botDB := new(fbot.BotDB)
 	db.DB = botDB
-	botDB.ConnectToDB()
+	botDB.ConnectToDB("db_test.db")
 }
 
-func (db *DBSuite) TearDownSuite() {
+func (db *DBSuite) TearDownAllSuite() {
 	db.DB.ClearDB()
+	db.DB.DeleteDB()
 }
 
 func (db *DBSuite) RunTestPopulatePricesTable(t *testing.T) {

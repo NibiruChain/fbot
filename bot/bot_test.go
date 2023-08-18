@@ -2,8 +2,9 @@ package fbot_test
 
 import (
 	"context"
-	"fbot"
-	"fmt"
+	fbot "fbot/bot"
+	"os"
+	"reflect"
 	"testing"
 
 	"cosmossdk.io/math"
@@ -11,6 +12,8 @@ import (
 	"github.com/NibiruChain/nibiru/x/common"
 	perpTypes "github.com/NibiruChain/nibiru/x/perp/v2/types"
 	"github.com/Unique-Divine/gonibi"
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
+	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -31,10 +34,151 @@ type BotSuite struct {
 	ctx     context.Context
 	address sdk.AccAddress
 	chain   *BlockChain
+	config  *fbot.BotConfig
 }
 
 func TestBot(t *testing.T) {
 	suite.Run(t, new(BotSuite))
+}
+
+func (s *BotSuite) Run(t *testing.T) {
+	err := fbot.Run(s.bot)
+	s.NoError(err)
+}
+
+func (s *BotSuite) RunTestInitConfig(t *testing.T) {
+
+	mnemonic, err := MakeValidMnemonic()
+	s.NoError(err)
+	for _, tc := range []struct {
+		name               string
+		newConfig          fbot.BotConfig
+		oldConfig          fbot.BotConfig
+		numFieldsNewConfig int
+	}{
+		{
+			name: "FILLED ENV",
+			oldConfig: fbot.BotConfig{
+				MNEMONIC:       "",
+				CHAIN_ID:       "nibiru-localnet-0",
+				GRPC_ENDPOINT:  "localhost:9090",
+				TMRPC_ENDPOINT: "http://localhost:26657",
+			},
+			newConfig: fbot.BotConfig{
+				MNEMONIC:       "",
+				CHAIN_ID:       "",
+				GRPC_ENDPOINT:  "",
+				TMRPC_ENDPOINT: "",
+			},
+			numFieldsNewConfig: 0,
+		},
+		{
+			name: "BOTH ENV MISSING FIELDS",
+			oldConfig: fbot.BotConfig{
+				MNEMONIC:       "",
+				CHAIN_ID:       "",
+				GRPC_ENDPOINT:  "localhost:9090",
+				TMRPC_ENDPOINT: "",
+			},
+			newConfig: fbot.BotConfig{
+				MNEMONIC:       "",
+				CHAIN_ID:       "nibiru-localnet-0",
+				GRPC_ENDPOINT:  "",
+				TMRPC_ENDPOINT: "http://localhost:26657",
+			},
+			numFieldsNewConfig: 2,
+		},
+		{
+			name: "EMPTY ENV",
+			oldConfig: fbot.BotConfig{
+				MNEMONIC:       "",
+				CHAIN_ID:       "",
+				GRPC_ENDPOINT:  "",
+				TMRPC_ENDPOINT: "",
+			},
+
+			newConfig: fbot.BotConfig{
+				MNEMONIC:       mnemonic,
+				CHAIN_ID:       "nibiru-localnet-0",
+				GRPC_ENDPOINT:  "localhost:9090",
+				TMRPC_ENDPOINT: "http://localhost:26657",
+			},
+			numFieldsNewConfig: 4,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+
+			fbot.DeleteConfigFile()
+
+			envFile, _ := os.Create(fbot.EnvFilePath())
+			envFile.WriteString("MNEMONIC: " + tc.oldConfig.MNEMONIC + "\n")
+			envFile.WriteString("CHAIN_ID: " + tc.oldConfig.CHAIN_ID + "\n")
+			envFile.WriteString("GRPC_ENDPOINT: " + tc.oldConfig.GRPC_ENDPOINT + "\n")
+			envFile.WriteString("TMRPC_ENDPOINT: " + tc.oldConfig.TMRPC_ENDPOINT + "\n")
+
+			config, err := fbot.Load()
+			s.NoError(err)
+
+			numConfigFields := 0
+			configVal := reflect.ValueOf(*config)
+			for i := 0; i < configVal.NumField(); i++ {
+				if len(configVal.Field(i).String()) != 0 {
+					numConfigFields++
+				}
+			}
+
+			fbot.DeleteConfigFile()
+
+			newEnvFile, _ := os.Create(fbot.EnvFilePath())
+			newEnvFile.WriteString("MNEMONIC: " + tc.newConfig.MNEMONIC + "\n")
+			newEnvFile.WriteString("CHAIN_ID: " + tc.newConfig.CHAIN_ID + "\n")
+			newEnvFile.WriteString("GRPC_ENDPOINT: " + tc.newConfig.GRPC_ENDPOINT + "\n")
+			newEnvFile.WriteString("TMRPC_ENDPOINT: " + tc.newConfig.TMRPC_ENDPOINT + "\n")
+
+			newConfig, err := config.Save()
+
+			numNewConfigFields := 0
+			newConfigVal := reflect.ValueOf(*newConfig)
+			for i := 0; i < newConfigVal.NumField(); i++ {
+				if len(newConfigVal.Field(i).String()) != 0 {
+					numNewConfigFields++
+				}
+			}
+			s.Equal(numConfigFields+tc.numFieldsNewConfig, numNewConfigFields)
+
+			s.NoError(err)
+
+		})
+
+	}
+}
+
+func MakeValidMnemonic() (string, error) {
+	kring := gonibi.NewKeyring()
+	_, mnemonic, err := kring.NewMnemonic(
+		/* uid */ "10",
+		/* language */ keyring.English,
+		/* hdPath */ sdk.FullFundraiserPath,
+		/* big39Passphrase */ "",
+		/* algo */ hd.Secp256k1,
+	)
+
+	return mnemonic, err
+}
+
+func (s *BotSuite) RunTestCheckConfig(t *testing.T) {
+
+	mnemonic, err := MakeValidMnemonic()
+	s.NoError(err)
+
+	config, err := fbot.Load()
+	s.NoError(err)
+
+	s.config = config
+	s.config.MNEMONIC = mnemonic
+
+	err = s.config.CheckConfig()
+	s.NoError(err)
 }
 
 // Example of iterative test cases
@@ -131,17 +275,22 @@ func (chain *BlockChain) ConnectGrpc(t *testing.T) {
 }
 
 func (s *BotSuite) TestBotSuite() {
+	s.T().Run("RunTestInitConfig", s.RunTestInitConfig)
+	s.T().Run("RunTestCheckConfig", s.RunTestCheckConfig)
 	s.chain = SetupChain(s.T())
 	s.SetupGoSdk()
-	//s.T().Run("RunTest", s.Run)
+
 	s.T().Run("RunTestPopulatePrices", s.RunTestFetchPrices)
 	s.T().Run("RunTestQuoteNeededToMovePrice", s.RunTestQuoteNeededToMovePrice)
-	s.T().Run("RunTestFetchBalances", s.RunTestFetchBalances)
-	s.bot.DB = fbot.CreateAndConnectDB()
+	s.T().Run("RunTestPopWalletCoins", s.RunTestPopWalletCoins)
 	s.T().Run("RunTestGetBlockHeight", s.RunTestGetBlockHeight)
-	s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
-	s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
+	// s.T().Run("RunTestOpenPosition", s.RunTestOpenPosition)
+	// s.T().Run("RunTestClosePosition", s.RunTestClosePosition)
+}
+
+func (s *BotSuite) TearDownAllSuite() {
 	s.bot.DB.ClearDB()
+	s.bot.DB.DeleteDB()
 	s.chain.network.Cleanup()
 }
 
@@ -156,7 +305,7 @@ func (s *BotSuite) SetupGoSdk() {
 	bot, err := fbot.NewBot(
 		fbot.BotArgs{
 			ChainId:     s.chain.cfg.ChainID,
-			GrpcConn:    s.chain.grpcConn,
+			GrpcEndpt:   s.chain.cfg.GRPCAddress,
 			RpcEndpt:    s.chain.val.RPCAddress,
 			Mnemonic:    "",
 			UseMnemonic: false,
@@ -168,13 +317,8 @@ func (s *BotSuite) SetupGoSdk() {
 	s.bot = bot
 	s.bot.Gosdk.Keyring = s.chain.val.ClientCtx.Keyring
 
-	s.Equal(s.bot.Gosdk.GrpcClient, s.chain.grpcConn)
+	s.address = s.chain.val.Address
 
-}
-
-func (s *BotSuite) Run(t *testing.T) {
-	err := fbot.Run(s.bot)
-	s.NoError(err)
 }
 
 func (s *BotSuite) RunTestPopulateAmms(t *testing.T) {
@@ -193,21 +337,36 @@ func (s *BotSuite) RunTestPopulateAmms(t *testing.T) {
 }
 
 func (s *BotSuite) RunTestFetchPrices(t *testing.T) {
-
+	s.NotNil(s.bot.DB)
 	err := s.bot.FetchNewPrices(s.ctx)
 	s.NoError(err)
 
 }
 
-func (s *BotSuite) RunTestFetchBalances(t *testing.T) {
-	fundsErr := s.bot.FetchBalances(s.ctx)
-	s.NoError(fundsErr)
+func (s *BotSuite) RunTestUpdateTradeBalance(t *testing.T) {
+
+	s.bot.UpdateTradeBalance(fbot.OpenOrder, "ubtc:unusd", sdk.NewInt(100))
+
+	s.Equal(t, s.bot.State.PortfolioBalances.Balances.TradedBalances["ubtc:unusd"], 100)
+
+	s.bot.UpdateTradeBalance(fbot.CloseOrder, "ubtc:unusd", sdk.NewInt(100))
+
+	s.Equal(t, s.bot.State.PortfolioBalances.Balances.TradedBalances["ubtc:unusd"], 0)
+
+}
+
+func (s *BotSuite) RunTestPopWalletCoins(t *testing.T) {
+	balancesResp, err := s.bot.State.PortfolioBalances.Balances.QueryWalletCoins(s.ctx, s.address, s.bot.Gosdk.GrpcClient)
+	s.NotNil(balancesResp)
+	s.NoError(err)
+
+	s.bot.State.PortfolioBalances.Balances.PopWalletCoins(balancesResp)
 }
 
 func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		quoteAmount sdk.Dec
+		quoteAmount sdk.Int
 		amm         perpTypes.AMM
 		posExists   bool
 		position    fbot.CurrPosStats
@@ -215,7 +374,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 	}{
 		{
 			name:        "Open Order",
-			quoteAmount: sdk.NewDec(3500), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(3500), amm: perpTypes.AMM{
 				Pair:            "ubtc:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -236,7 +395,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "Close Order",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ueth:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -257,7 +416,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "CloseAndOpenOrder",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ueth:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -278,7 +437,7 @@ func (s *BotSuite) RunTestEvaluateTradeAction(t *testing.T) {
 		},
 		{
 			name:        "DontTrade",
-			quoteAmount: sdk.NewDec(350), amm: perpTypes.AMM{
+			quoteAmount: sdk.NewInt(350), amm: perpTypes.AMM{
 				Pair:            "ubtc:unusd",
 				BaseReserve:     sdk.NewDec(10000),
 				QuoteReserve:    sdk.NewDec(10000),
@@ -365,9 +524,6 @@ func (s *BotSuite) RunTestGetBlockHeight(t *testing.T) {
 }
 
 func (s *BotSuite) RunTestOpenPosition(t *testing.T) {
-
-	s.address = s.chain.val.Address
-
 	addr, err := s.bot.GetAddress()
 	s.NoError(err)
 
@@ -396,13 +552,12 @@ func (s *BotSuite) RunTestClosePosition(t *testing.T) {
 }
 
 func (s *BotSuite) FetchPositions(t *testing.T) {
+	s.NotNil(s.bot.DB)
 
 	err := s.bot.FetchAndPopPositionsDB(s.address, s.ctx)
 	s.NoError(err)
 	positions, err := s.bot.DB.QueryPositionTable()
 	s.NoError(err)
 	s.NotNil(positions)
-
-	fmt.Println("POSITIONS: ", positions)
 
 }

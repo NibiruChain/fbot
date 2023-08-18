@@ -1,28 +1,32 @@
 package fbot
 
 import (
+	"os"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 type BotDB struct {
-	DB *gorm.DB
+	DB   *gorm.DB
+	Name string
 }
 
-func CreateAndConnectDB() BotDB {
+func CreateAndConnectDB(dbName string) BotDB {
 	botDB := new(BotDB)
 
-	botDB.ConnectToDB()
+	botDB.ConnectToDB(dbName)
 	return *botDB
 }
 
-func (botdb *BotDB) ConnectToDB() {
-	db, err := gorm.Open(sqlite.Open("bot.db"), &gorm.Config{})
+func (botdb *BotDB) ConnectToDB(dbName string) {
+	db, err := gorm.Open(sqlite.Open(dbName), &gorm.Config{})
 	if err != nil {
 		panic("failed to connect database")
 	}
 	botdb.DB = db
+	botdb.Name = dbName
 
 	botdb.DB.AutoMigrate(&TablePrices{})
 	botdb.DB.AutoMigrate(&TableAmms{})
@@ -31,23 +35,15 @@ func (botdb *BotDB) ConnectToDB() {
 }
 
 func (botdb *BotDB) ClearDB() {
-	// botdb.DB.Delete(&TablePosition{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TablePrices{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TableAmms{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TableBalances{})
 	botdb.DB.Where("pair IS NOT NULL").Delete(&TablePosition{})
 }
 
-// func (botdb *BotDB) JoinTables() {
-// 	var joinedData []JoinedData
-
-// 	botdb.DB.Table("table_prices_amms").
-// 		Select("table_prices_amms.*, table_position.*, table_balances.*").
-// 		Joins("JOIN table_position ON table_prices_amms.block_height = table_position.block_height").
-// 		Joins("JOIN table_balances ON table_prices_amms.block_height = table_balances.block_height").
-// 		Scan(&joinedData)
-
-// }
+func (botdb *BotDB) DeleteDB() {
+	os.Remove(botdb.Name)
+}
 
 // Populating Tables
 
@@ -85,16 +81,14 @@ func (botdb *BotDB) PopulatePositionTable(positions map[string]PositionFields, b
 	}
 }
 
-func (botdb *BotDB) PopulateBalancesTable(balances map[string]sdk.Coins, blockHeight int64) {
-	for trader, coins := range balances {
-		for _, coin := range coins {
-			botdb.DB.Create(&TableBalances{
-				Trader:      trader,
-				Denom:       coin.Denom,
-				Amount:      coin.Amount.String(),
-				BlockHeight: blockHeight,
-			})
-		}
+func (botdb *BotDB) PopulateBalancesTable(wallet sdk.Coins, trader string, blockHeight int64) {
+	for _, coin := range wallet {
+		botdb.DB.Create(&TableBalances{
+			Trader:      trader,
+			Denom:       coin.Denom,
+			Amount:      coin.Amount.String(),
+			BlockHeight: blockHeight,
+		})
 	}
 }
 
