@@ -30,7 +30,7 @@ func (botdb *BotDB) ConnectToDB(dbName string) {
 
 	botdb.DB.AutoMigrate(&TablePrices{})
 	botdb.DB.AutoMigrate(&TableAmms{})
-	botdb.DB.AutoMigrate(&TableAmms{})
+	botdb.DB.AutoMigrate(&TablePosition{})
 	botdb.DB.AutoMigrate(&TableBalances{})
 }
 

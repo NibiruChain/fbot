@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 
 	"reflect"
 
@@ -29,7 +30,23 @@ type BotConfig struct {
 // Initialize Config from .env.bot
 
 func EnvFilePath() string {
+
 	cwd, _ := os.Getwd()
+
+	for {
+		// break if we've reached root
+		if cwd == "/" {
+			break
+		}
+
+		// step up one directory
+		cwd = filepath.Dir(cwd)
+	}
+	// for i := 0; i <= depth; i++ {
+	// 	parent := filepath.Dir(root)
+	// 	root = parent
+	// }
+
 	envFilePath := path.Join(cwd, ENV_FILENAME)
 	return envFilePath
 }

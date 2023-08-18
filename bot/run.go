@@ -3,6 +3,7 @@ package fbot
 import (
 	"context"
 	"fmt"
+	"log"
 )
 
 // go build -o bot main.go
@@ -13,19 +14,14 @@ type Runner struct {
 }
 
 type Server struct {
-	StartCh  chan bool
-	StopCh   chan bool
-	PauseCh  chan bool
+	StartCh  bool
+	StopCh   bool
+	PauseCh  bool
 	IsPaused bool
 }
 
-// After setup, check if already trading from account
-// Start trade and tell user if broke
-// PauseBot() Stop running
-// EndBot() Exit all positions
-
 type BotAPI interface {
-	SetConfig(config BotConfig) error
+	SetConfig(config BotConfig, keyname string) error
 	StartBot() error
 	PauseBot() error
 	EndBot() error
@@ -33,7 +29,7 @@ type BotAPI interface {
 
 var _ BotAPI = (*Runner)(nil)
 
-func (runner *Runner) SetConfig(config BotConfig) error {
+func (runner *Runner) SetConfig(config BotConfig, keyname string) error {
 
 	bot, err := NewBot(
 		BotArgs{
@@ -42,7 +38,7 @@ func (runner *Runner) SetConfig(config BotConfig) error {
 			RpcEndpt:    config.TMRPC_ENDPOINT,
 			Mnemonic:    config.MNEMONIC,
 			UseMnemonic: true,
-			KeyName:     "",
+			KeyName:     keyname,
 		},
 	)
 
@@ -55,28 +51,16 @@ func (runner *Runner) SetConfig(config BotConfig) error {
 	return nil
 }
 
-// function for cases of channels -> choose execution path
-func (runner *Runner) HandleChannels() {
-	for {
-		select {
-		case <-runner.Server.StartCh:
-			runner.StartBot()
-		case <-runner.Server.PauseCh:
-			if runner.Server.IsPaused {
-				runner.Server.IsPaused = false
-				runner.StartBot()
-			} else {
-				runner.Server.IsPaused = true
-				runner.PauseBot()
-			}
-		case <-runner.Server.StopCh:
-			runner.EndBot()
-			return
-		}
-	}
-}
-
 func (runner *Runner) StartBot() error {
+
+	err := Run(runner.Bot)
+
+	if err != nil {
+		log.Fatalf("Cannot run bot: %v", err)
+	}
+
+	posTables, err := runner.Bot.DB.QueryPositionTable()
+	fmt.Println("Position: ", posTables)
 
 	return nil
 }
@@ -106,6 +90,9 @@ func (runner *Runner) EndBot() error {
 			return err
 		}
 	}
+
+	posTables, err := runner.Bot.DB.QueryPositionTable()
+	fmt.Println("Position: ", posTables)
 
 	return nil
 }
