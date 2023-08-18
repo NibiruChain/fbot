@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"cosmossdk.io/math"
 	"github.com/NibiruChain/nibiru/app"
 	"github.com/NibiruChain/nibiru/x/common"
 	"github.com/NibiruChain/nibiru/x/common/asset"
@@ -102,8 +103,9 @@ func Run(bot *Bot) error {
 	context := context.Background()
 
 	if err := bot.SyncState(); err != nil {
-		return err
+		return fmt.Errorf("Cannot SyncState(): %s", err)
 	}
+
 	// Querying info for Prices/Amms structs
 	err := bot.FetchNewPrices(context)
 	if err != nil {
@@ -312,7 +314,7 @@ func NewBot(args BotArgs) (*Bot, error) {
 
 	var keyName string = KEY_NAME
 
-	dontUseMnemonic := args.Mnemonic != "" || args.UseMnemonic == false
+	dontUseMnemonic := args.Mnemonic == "" || args.UseMnemonic == false
 
 	if !dontUseMnemonic {
 
@@ -338,10 +340,10 @@ func NewBot(args BotArgs) (*Bot, error) {
 		}
 
 		if !keyExists {
-
 			err = gonibi.AddSignerToKeyring(gosdk.Keyring, privKey, keyName)
 
 			if err != nil {
+
 				return nil, err
 
 			}
@@ -382,7 +384,7 @@ func (bot *Bot) OpenPosition(trader sdk.AccAddress, quoteToMove sdk.Int,
 		Sender:               trader.String(),
 		Pair:                 asset.Pair(pair),
 		Side:                 perpTypes.Direction(side),
-		QuoteAssetAmount:     quoteToMove.Abs(),
+		QuoteAssetAmount:     quoteToMove.Abs().Quo(math.NewInt(10)),
 		Leverage:             leverage,
 		BaseAssetAmountLimit: sdk.NewInt(0),
 	})
@@ -462,6 +464,7 @@ func (bot *Bot) GetKeyringRecord() (*keyring.Record, error) {
 }
 
 func (bot *Bot) GetAddress() (sdk.AccAddress, error) {
+
 	record, err := bot.GetKeyringRecord()
 
 	if err != nil {
