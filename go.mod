@@ -10,7 +10,8 @@ require (
 	github.com/cosmos/cosmos-sdk v0.47.4
 	github.com/joho/godotenv v1.5.1
 	github.com/stretchr/testify v1.8.4
-	google.golang.org/grpc v1.56.2
+	github.com/urfave/cli v1.22.14
+	google.golang.org/grpc v1.56.3
 	gorm.io/driver/sqlite v1.5.2
 	gorm.io/gorm v1.25.2-0.20230530020048-26663ab9bf55
 
@@ -159,7 +160,6 @@ require (
 	github.com/tendermint/go-amino v0.16.0 // indirect
 	github.com/tidwall/btree v1.6.0 // indirect
 	github.com/ulikunitz/xz v0.5.11 // indirect
-	github.com/urfave/cli v1.22.14 // indirect
 	github.com/zondax/hid v0.9.1 // indirect
 	github.com/zondax/ledger-go v0.14.1 // indirect
 	go.etcd.io/bbolt v1.3.7 // indirect
